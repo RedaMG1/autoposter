@@ -63,7 +63,7 @@ async function fail(env: Env, id: string, error: string) {
 }
 
 /** A platform's daily upload cap (new YouTube channels get only a few uploads a day). */
-export const DAILY_LIMIT = /exceeded the number of videos|uploadLimitExceeded|quotaExceeded|daily limit/i;
+export const DAILY_LIMIT = /exceeded the number of videos|uploadLimitExceeded|quotaExceeded|daily limit|publishing limit|posts? per 24 hours|limit of \d+ (?:posts|API-published)|\(#9\)/i;
 
 export async function retryOrFail(env: Env, p: Pick<PostRow, "id" | "attempts">, error: string, permanent: boolean) {
   if (DAILY_LIMIT.test(error)) {
