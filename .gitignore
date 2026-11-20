@@ -9,3 +9,4 @@ __pycache__/
 method-2/
 upload/
 .env
+pc-worker/poster.log

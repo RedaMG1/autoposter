@@ -28,6 +28,16 @@ python import_existing.py --only taxi  # just the ones matching "taxi"
 Needs `pc-worker/.env` with `AUTOPOSTER_API` and `AUTOPOSTER_WORKER_TOKEN`
 (same token as `WORKER_TOKEN` in `app/.dev.vars`). Both files are git-ignored.
 
+## PC poster (uploads due clips from this PC)
+
+`pc-worker/poster.py` asks the online app every minute what is due and uploads those videos
+straight from their files to Instagram (re-encoding anything above 18 Mbps to a 15 Mbps copy).
+
+- Starts by itself at Windows login: a shortcut "Autoposter PC poster" in the Startup folder
+  (`Win+R` → `shell:startup`). Delete it to stop auto-start.
+- Runs invisibly (`pythonw`). What it did is in `pc-worker/poster.log`.
+- Run it by hand: `python poster.py` (or `--once` for a single check).
+
 ## Tests
 
 ```bash
