@@ -62,7 +62,17 @@ async function fail(env: Env, id: string, error: string) {
   await env.DB.prepare("UPDATE posts SET status = 'failed', error = ? WHERE id = ?").bind(error.slice(0, 500), id).run();
 }
 
+/** A platform's daily upload cap (new YouTube channels get only a few uploads a day). */
+export const DAILY_LIMIT = /exceeded the number of videos|uploadLimitExceeded|quotaExceeded|daily limit/i;
+
 export async function retryOrFail(env: Env, p: Pick<PostRow, "id" | "attempts">, error: string, permanent: boolean) {
+  if (DAILY_LIMIT.test(error)) {
+    // not the post's fault: try again tomorrow, without using up its attempts
+    const tomorrow = new Date(Date.now() + 24 * 3600_000).toISOString();
+    await env.DB.prepare("UPDATE posts SET status = 'scheduled', scheduled_at = ?, error = ?, remote_id = NULL WHERE id = ?")
+      .bind(tomorrow, "daily upload limit reached: trying again tomorrow", p.id).run();
+    return;
+  }
   const attempts = p.attempts + 1;
   if (permanent || attempts >= MAX_ATTEMPTS) return fail(env, p.id, error);
   // back to scheduled, tried again on a later run

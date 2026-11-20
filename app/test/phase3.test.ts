@@ -108,6 +108,18 @@ describe("YouTube from the PC", () => {
     expect(await post("y1-youtube")).toMatchObject({ status: "posted", remote_url: "https://youtube.com/shorts/abcDEF12345" });
   });
 
+  it("hitting YouTube's daily upload limit moves the post to tomorrow instead of failing it", async () => {
+    vi.stubGlobal("fetch", async () => Response.json({ error: { message: "The user has exceeded the number of videos they may upload.", errors: [{ reason: "uploadLimitExceeded" }] } }, { status: 400 }));
+    await connect("youtube");
+    await duePc("y3", "youtube");
+    const r = await call("/api/worker/posts/y3-youtube/start", { method: "POST", headers: WORKER, body: JSON.stringify({ file_size: 1234 }) });
+    expect(r.status).toBe(502);
+    const p = await post("y3-youtube");
+    expect(p?.status).toBe("scheduled");
+    expect(p?.attempts).toBe(0);
+    expect(Date.parse(String(p?.scheduled_at))).toBeGreaterThan(Date.now() + 23 * 3600_000);
+  });
+
   it("needs the file size", async () => {
     await connect("youtube");
     await duePc("y2", "youtube");
