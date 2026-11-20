@@ -66,26 +66,47 @@ def find_tool(name: str) -> str:
 
 def probe(file: Path) -> dict:
     import subprocess
-    out = subprocess.run([find_tool("ffprobe"), "-v", "error", "-show_entries", "format=bit_rate:stream=codec_name,codec_type",
+    out = subprocess.run([find_tool("ffprobe"), "-v", "error", "-show_entries", "format=bit_rate:stream=codec_name,codec_type,r_frame_rate",
                           "-of", "json", str(file)], capture_output=True, text=True, check=True).stdout
     data = json.loads(out)
     streams = {s["codec_type"]: s["codec_name"] for s in data.get("streams", [])}
-    return {"bit_rate": int(data.get("format", {}).get("bit_rate") or 0), "video": streams.get("video"), "audio": streams.get("audio")}
+    rate = next((s.get("r_frame_rate") for s in data.get("streams", []) if s["codec_type"] == "video"), None)
+    return {"bit_rate": int(data.get("format", {}).get("bit_rate") or 0), "video": streams.get("video"), "audio": streams.get("audio"),
+            "fps": rate}
+
+
+def steady_fps(rate: str | None) -> bool:
+    """True for a normal constant frame rate (30/1, 60/1, 30000/1001...). Recorder output like 911891/15198 is not."""
+    if not rate or "/" not in rate:
+        return True
+    num, den = (int(x) for x in rate.split("/"))
+    return den in (1, 1001) and num > 0
+
+
+def target_fps(rate: str | None) -> int:
+    try:
+        num, den = (int(x) for x in (rate or "60/1").split("/"))
+        return 30 if num / den < 45 else 60
+    except (ValueError, ZeroDivisionError):
+        return 30
 
 
 def needs_reencode(info: dict) -> bool:
-    return info["bit_rate"] > MAX_BITRATE or info["video"] != "h264" or info["audio"] not in ("aac", None)
+    return (info["bit_rate"] > MAX_BITRATE or info["video"] != "h264" or info["audio"] not in ("aac", None)
+            or not steady_fps(info.get("fps")))
 
 
 def instagram_ready(file: Path, tmp_dir: Path) -> Path:
     """The file itself when it already fits Instagram, else a 15 Mbps H.264/AAC copy in tmp_dir."""
     import subprocess
-    if not needs_reencode(probe(file)):
+    info = probe(file)
+    if not needs_reencode(info):
         return file
     out = tmp_dir / (file.stem[:60] + ".ig.mp4")
     subprocess.run([find_tool("ffmpeg"), "-v", "error", "-y", "-i", str(file),
                     "-c:v", "libx264", "-preset", "medium", "-b:v", "15M", "-maxrate", "18M", "-bufsize", "30M",
-                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)],
+                    "-pix_fmt", "yuv420p", "-r", str(target_fps(info.get("fps"))), "-fps_mode", "cfr",
+                    "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", str(out)],
                    check=True, capture_output=True)
     return out
 

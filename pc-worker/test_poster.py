@@ -132,3 +132,10 @@ def test_normal_clip_is_uploaded_as_is(tmp_path):
                     "-f", "lavfi", "-i", "sine", "-t", "2", "-c:v", "libx264", "-b:v", "5M", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", str(src)], check=True)
     assert poster.instagram_ready(src, tmp_path) == src
+
+
+def test_odd_frame_rate_is_re_encoded():
+    assert poster.needs_reencode({"bit_rate": 16_000_000, "video": "h264", "audio": "aac", "fps": "911891/15198"})
+    assert not poster.needs_reencode({"bit_rate": 16_000_000, "video": "h264", "audio": "aac", "fps": "60/1"})
+    assert not poster.needs_reencode({"bit_rate": 16_000_000, "video": "h264", "audio": "aac", "fps": "30000/1001"})
+    assert poster.target_fps("911891/15198") == 60 and poster.target_fps("30000/1001") == 30
