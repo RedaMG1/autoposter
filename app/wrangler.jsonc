@@ -25,6 +25,7 @@
   "vars": { "TIMEZONE": "Europe/Paris", "PUBLIC_URL": "https://autoposter.fivestars6.workers.dev",
     // Meta app "Autoposter" + its Instagram login configuration (the app secret is a Cloudflare secret)
     "IG_APP_ID": "1765237335172412",
-    "IG_CONFIG_ID": "2056529495049245"
+    "IG_CONFIG_ID": "2056529495049245",
+    "IG_USER_ID": "17841475127975476"
   }
 }

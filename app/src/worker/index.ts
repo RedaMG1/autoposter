@@ -202,17 +202,19 @@ app.get("/api/oauth/instagram/start", async (c) => {
 app.get("/api/oauth/instagram/callback", async (c) => {
   const back = (msg: string) => c.redirect(`/#settings?msg=${encodeURIComponent(msg)}`);
   const [nonce, sig] = (c.req.query("state") ?? "").split(".");
-  if (!nonce || !(await verify(c.env.SESSION_KEY, `oauth:instagram:${nonce}`, sig ?? ""))) return back("Instagram: invalid state, try again");
+  if (!nonce || !(await verify(c.env.SESSION_KEY, `oauth:instagram:${nonce}`, sig ?? ""))) { console.error("instagram callback: invalid state"); return back("Instagram: invalid state, try again"); }
   const code = c.req.query("code");
-  if (!code) return back(`Instagram: ${c.req.query("error_description") ?? "connection cancelled"}`);
+  if (!code) { console.error(`instagram callback without code: ${c.req.query("error_description") ?? c.req.query("error") ?? "cancelled"}`); return back(`Instagram: ${c.req.query("error_description") ?? "connection cancelled"}`); }
   try {
-    const r = await ig.connect(fetch, c.env.IG_APP_ID!, c.env.IG_APP_SECRET!, redirectUri(c.env, "instagram"), code.replace(/#_$/, ""));
+    const r = await ig.connect(fetch, c.env.IG_APP_ID!, c.env.IG_APP_SECRET!, redirectUri(c.env, "instagram"), code.replace(/#_$/, ""), c.env.IG_USER_ID);
     await c.env.DB.prepare(
       `INSERT INTO accounts (platform, display_name, tokens, expires_at) VALUES ('instagram', ?, ?, ?)
        ON CONFLICT(platform) DO UPDATE SET display_name = excluded.display_name, tokens = excluded.tokens, expires_at = excluded.expires_at`)
       .bind(`@${r.username}`, await encryptJson(c.env.TOKEN_KEY, r.tokens), r.expires_at).run();
+    console.log(`instagram connected as @${r.username}`);
     return back(`Instagram connected as @${r.username}`);
   } catch (e) {
+    console.error(`instagram connect failed: ${(e as Error).message}`);
     return back(`Instagram: ${(e as Error).message}`);
   }
 });

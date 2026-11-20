@@ -34,7 +34,7 @@ export function authorizeUrl(appId: string, configId: string, redirectUri: strin
 }
 
 /** code -> system-user token (never expires) + the Instagram account it was granted for. */
-export async function connect(f: Fetch, appId: string, appSecret: string, redirectUri: string, code: string) {
+export async function connect(f: Fetch, appId: string, appSecret: string, redirectUri: string, code: string, fallbackIgId?: string) {
   const tok = await igJson<{ access_token: string; expires_in?: number }>(
     await f(`${IG_GRAPH}/oauth/access_token?${new URLSearchParams({
       client_id: appId, client_secret: appSecret, redirect_uri: redirectUri, code,
@@ -45,8 +45,10 @@ export async function connect(f: Fetch, appId: string, appSecret: string, redire
       input_token: tok.access_token, access_token: `${appId}|${appSecret}`,
     })}`), "check token");
   const scopes = dbg.data.granular_scopes ?? [];
+  // system-user tokens do not always list target ids; then use the account id set on the server
   const igId = (scopes.find((s) => s.scope === "instagram_content_publish")?.target_ids
-    ?? scopes.find((s) => s.scope === "instagram_basic")?.target_ids ?? [])[0];
+    ?? scopes.find((s) => s.scope === "instagram_basic")?.target_ids ?? [])[0] ?? fallbackIgId;
+  console.log(`instagram token scopes: ${scopes.map((s) => `${s.scope}${s.target_ids ? `[${s.target_ids.length}]` : ""}`).join(", ") || "none listed"}`);
   if (!igId) throw new IgError("no Instagram account was selected during login (it must be a Creator or Business account)", 400);
   const me = await igJson<{ id: string; username: string }>(
     await f(`${IG_GRAPH}/${igId}?fields=id,username&access_token=${encodeURIComponent(tok.access_token)}`), "profile");

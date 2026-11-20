@@ -14,5 +14,7 @@ export interface Env {
   /** Meta app id and Facebook Login for Business configuration id (not secret) */
   IG_APP_ID?: string;
   IG_CONFIG_ID?: string;
+  /** Instagram professional account id (Business Suite > Instagram accounts), used if the token does not list it */
+  IG_USER_ID?: string;
   IG_APP_SECRET?: string; // secret
 }
