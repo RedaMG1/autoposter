@@ -8,7 +8,14 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations, WORKER_TOKEN: "test-token" },
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            WORKER_TOKEN: "test-token",
+            APP_PASSWORD: "test-password",
+            SESSION_KEY: "test-session-key",
+            TOKEN_KEY: "test-token-key",
+            PUBLIC_URL: "https://app.test",
+          },
         },
       }),
     ],

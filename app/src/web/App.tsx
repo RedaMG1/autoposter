@@ -1,17 +1,57 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
-import { api, fmtWhen, media, toLocalInput, type CalendarRow, type Clip, type Platform, type Post, type Settings, type Status } from "./api";
+import { api, fmtWhen, LOGGED_OUT, media, toLocalInput, type Account, type CalendarRow, type Clip, type Platform, type Post, type Settings, type Status } from "./api";
 
 type Tab = "library" | "calendar" | "settings";
 const PLATFORM_LABEL: Record<Platform, string> = { instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube" };
 
 export function App() {
+  const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
+  useEffect(() => {
+    api.me().then((r) => setAuth(r.loggedIn ? "in" : "out"), () => setAuth("out"));
+    const out = () => setAuth("out");
+    addEventListener(LOGGED_OUT, out);
+    return () => removeEventListener(LOGGED_OUT, out);
+  }, []);
+  if (auth === "checking") return <p class="empty">Loading…</p>;
+  if (auth === "out") return <Login onDone={() => setAuth("in")} />;
+  return <Main onLogout={() => api.logout().finally(() => setAuth("out"))} />;
+}
+
+function Login({ onDone }: { onDone: () => void }) {
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <form class="login" onSubmit={async (e) => {
+      e.preventDefault();
+      setBusy(true); setErr(null);
+      try { await api.login(pw); onDone(); } catch (x) { setErr((x as Error).message); }
+      setBusy(false);
+    }}>
+      <img src="/icon-192.png" alt="" width={64} height={64} />
+      <h1>Autoposter</h1>
+      <label>Password
+        <input type="password" autoComplete="current-password" value={pw} onInput={(e) => setPw(e.currentTarget.value)} autoFocus />
+      </label>
+      {err && <p class="err">{err === "wrong password" ? "Wrong password." : err}</p>}
+      <button class="primary" disabled={!pw || busy}>{busy ? "Checking…" : "Log in"}</button>
+    </form>
+  );
+}
+
+function Main({ onLogout }: { onLogout: () => void }) {
   const fromHash = (): Tab => {
-    const h = location.hash.slice(1);
+    const h = location.hash.slice(1).split("?")[0];
     return h === "calendar" || h === "settings" ? h : "library";
   };
   const [tab, setTab] = useState<Tab>(fromHash);
   const [toast, setToast] = useState<string | null>(null);
-  useEffect(() => { if (location.hash.slice(1) !== tab) location.hash = tab; }, [tab]);
+  useEffect(() => { if (location.hash.slice(1).split("?")[0] !== tab) location.hash = tab; }, [tab]);
+  // messages from OAuth redirects: /#settings?msg=...
+  useEffect(() => {
+    const m = new URLSearchParams(location.hash.split("?")[1] ?? "").get("msg");
+    if (m) { setToast(m); setTimeout(() => setToast(null), 6000); history.replaceState(null, "", `#${fromHash()}`); }
+  }, []);
   useEffect(() => {
     const onHash = () => setTab(fromHash());
     addEventListener("hashchange", onHash);
@@ -27,6 +67,7 @@ export function App() {
           {(["library", "calendar", "settings"] as Tab[]).map((t) => (
             <button class={tab === t ? "on" : ""} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
           ))}
+          <button class="link" onClick={onLogout}>Log out</button>
         </nav>
       </header>
       <main>
@@ -186,6 +227,9 @@ function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; n
                         <span class="when">{fmtWhen(p.scheduled_at)}</span>
                         {p.remote_url && <a href={p.remote_url} target="_blank" rel="noreferrer">open</a>}
                         {p.error && <span class="err" title={p.error}>{p.error}</span>}
+                        {p.status === "failed" && (
+                          <button class="link" disabled={busy} onClick={() => run(() => api.retry(p.id), `${PLATFORM_LABEL[p.platform]}: will try again`)}>retry</button>
+                        )}
                         {(p.status === "scheduled" || p.status === "failed") && (
                           <button class="link" disabled={busy} onClick={() => run(() => api.unschedule(p.id), `Removed from ${PLATFORM_LABEL[p.platform]}`)}>remove</button>
                         )}
@@ -255,6 +299,36 @@ function Calendar({ notify }: { notify: (m: string) => void }) {
 
 // ---------------- Settings ----------------
 
+function Accounts({ notify }: { notify: (m: string) => void }) {
+  const [list, setList] = useState<Account[] | null>(null);
+  const load = useCallback(() => api.accounts().then(setList, (e) => notify(`Couldn't load accounts: ${e.message}`)), [notify]);
+  useEffect(() => { load(); }, [load]);
+  if (!list) return <p class="hint">Loading accounts…</p>;
+  return (
+    <div class="accounts">
+      {list.map((a) => (
+        <div class="account" key={a.platform}>
+          <span class={`chip ${a.platform}`}>{PLATFORM_LABEL[a.platform]}</span>
+          {a.connected ? (
+            <>
+              <span>{a.display_name}</span>
+              {a.expires_at && <span class="hint">token renews automatically (now valid until {new Date(a.expires_at).toLocaleDateString()})</span>}
+              <button class="link" onClick={async () => {
+                if (!confirm(`Disconnect ${PLATFORM_LABEL[a.platform]}? Scheduled posts for it will fail until you reconnect.`)) return;
+                await api.disconnect(a.platform); notify("Disconnected"); load();
+              }}>disconnect</button>
+            </>
+          ) : a.available ? (
+            <a class="button primary" href={`/api/oauth/${a.platform}/start`}>Connect</a>
+          ) : (
+            <span class="hint">{a.platform === "instagram" ? "Waiting for the Instagram app keys on the server." : "Coming in the next phase."}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SettingsPage({ notify }: { notify: (m: string) => void }) {
   const [s, setS] = useState<Settings | null>(null);
   useEffect(() => { api.settings().then(setS, (e) => notify(`Couldn't load: ${e.message}`)); }, [notify]);
@@ -268,6 +342,9 @@ function SettingsPage({ notify }: { notify: (m: string) => void }) {
 
   return (
     <section class="settings">
+      <h2>Accounts</h2>
+      <Accounts notify={notify} />
+
       <h2>Posting times</h2>
       <p class="hint">Each approved clip takes the next free time. Times are in your time zone (Paris).</p>
       <div class="slots">
@@ -292,7 +369,7 @@ function SettingsPage({ notify }: { notify: (m: string) => void }) {
           {PLATFORM_LABEL[p]}
         </label>
       ))}
-      <p class="hint">Account connections arrive in the next phase. Until then nothing is actually posted.</p>
+      <p class="hint">A platform that is ticked but not connected shows the post as failed at its time, with the reason.</p>
 
       <h2>Scheduling</h2>
       <label class="check">

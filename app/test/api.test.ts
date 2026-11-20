@@ -1,9 +1,8 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { call, WORKER as W } from "./helpers";
 
-const W = { authorization: "Bearer test-token", "content-type": "application/json" };
 const json = (body: unknown) => ({ method: "POST", headers: W, body: JSON.stringify(body) });
-const call = (path: string, init?: RequestInit) => SELF.fetch(`https://app.test${path}`, init);
 
 async function addClip(id: string, streamer = "Jynxzi", extra: Record<string, unknown> = {}) {
   const r = await call("/api/worker/clips", json({ id, streamer, title: `${streamer} clip ${id}`, score: 8, ...extra }));

@@ -96,3 +96,12 @@ textarea { resize: vertical; }
   .overlay { padding: 0; align-items: end; }
   .sheet { border-radius: 16px 16px 0 0; max-height: 92dvh; }
 }
+
+.login { max-width: 340px; margin: 12vh auto 0; padding: 0 16px; display: flex; flex-direction: column; gap: 14px; text-align: center; }
+.login img { margin: 0 auto; border-radius: 16px; }
+.login h1 { margin: 0; font-size: 22px; }
+.login label { text-align: left; }
+a.button { display: inline-block; text-decoration: none; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.accounts { display: flex; flex-direction: column; gap: 10px; margin: 8px 0; }
+.account { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

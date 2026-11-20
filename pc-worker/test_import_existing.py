@@ -57,6 +57,14 @@ def test_clip_id_is_stable_and_safe():
     assert re.fullmatch(r"[a-z0-9-]+", a)
 
 
+def test_part_ranges_cover_the_file_with_equal_parts():
+    mb = 1024 * 1024
+    r = ie.part_ranges(156 * mb, 50 * mb)
+    assert r == [(0, 50 * mb), (50 * mb, 50 * mb), (100 * mb, 50 * mb), (150 * mb, 6 * mb)]
+    assert sum(length for _, length in r) == 156 * mb
+    assert ie.part_ranges(10, 50) == [(0, 10)]
+
+
 def test_find_clips_needs_post_md_and_skips_underscore_folders(tmp_path):
     (tmp_path / "Lirik").mkdir()
     (tmp_path / "_notes").mkdir()

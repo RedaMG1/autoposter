@@ -17,11 +17,19 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CLIPS = Path.home() / "Desktop" / "clips"
+SINGLE_UPLOAD_MAX = 90 * 1024 * 1024  # Cloudflare's request limit is 100 MB
+PART_SIZE = 50 * 1024 * 1024
+
+
+def part_ranges(size: int, part: int = PART_SIZE) -> list[tuple[int, int]]:
+    """(offset, length) of each part: all the same size except the last."""
+    return [(o, min(part, size - o)) for o in range(0, size, part)]
 
 
 def load_env() -> dict[str, str]:
@@ -90,17 +98,48 @@ class Api:
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"{method} {path} -> {e.code}: {e.read()[:300]!r}") from None
 
-    def upload(self, key: str, file: Path, attempts: int = 3) -> dict:
-        size = file.stat().st_size
+    def _retry(self, fn, attempts: int = 3):
         for n in range(1, attempts + 1):
             try:
-                with open(file, "rb") as fh:  # streamed, never loaded into memory
-                    return self._send("PUT", f"/api/worker/upload/{key}", data=fh, headers={"content-length": str(size)})
+                return fn()
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                 if n == attempts:
                     raise
-                print(f"    upload retry {n}/{attempts - 1} after: {e}")
+                print(f"    retry {n}/{attempts - 1} after: {e}")
         raise AssertionError("unreachable")
+
+    def upload(self, key: str, file: Path) -> dict:
+        size = file.stat().st_size
+        if size > SINGLE_UPLOAD_MAX:
+            return self.upload_multipart(key, file, size)
+
+        def once():
+            with open(file, "rb") as fh:  # streamed, never loaded into memory
+                return self._send("PUT", f"/api/worker/upload/{key}", data=fh, headers={"content-length": str(size)})
+        return self._retry(once)
+
+    def upload_multipart(self, key: str, file: Path, size: int) -> dict:
+        """Cloudflare caps one request at 100 MB, so big videos go up in equal parts."""
+        base = f"/api/worker/multipart/{key}"
+        upload_id = self._send("POST", f"{base}?action=create")["uploadId"]
+        q = urllib.parse.quote(upload_id, safe="")
+        parts = []
+        try:
+            with open(file, "rb") as fh:
+                for number, (offset, length) in enumerate(part_ranges(size), 1):
+                    fh.seek(offset)
+                    chunk = fh.read(length)
+                    parts.append(self._retry(lambda: self._send(
+                        "PUT", f"{base}?uploadId={q}&part={number}", data=chunk,
+                        headers={"content-length": str(len(chunk))})))
+            return self._send("POST", f"{base}?action=complete&uploadId={q}",
+                              data=json.dumps({"parts": parts}).encode(), headers={"content-type": "application/json"})
+        except Exception:
+            try:
+                self._send("POST", f"{base}?action=abort&uploadId={q}")
+            except Exception:
+                pass
+            raise
 
     def create_clip(self, clip: dict) -> dict:
         return self._send("POST", "/api/worker/clips", data=json.dumps(clip).encode(),

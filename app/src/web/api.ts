@@ -29,17 +29,36 @@ export interface Post {
 export interface CalendarRow extends Post { title: string; streamer: string; thumb_key: string | null }
 export interface Settings { slots: string[]; platforms: Platform[]; auto_schedule: boolean }
 
+export interface Account {
+  platform: Platform;
+  available: boolean;
+  connected: boolean;
+  display_name: string | null;
+  expires_at: string | null;
+}
+
+/** Fired when the server says the session is gone, so the app can show the login screen. */
+export const LOGGED_OUT = "autoposter:logged-out";
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: init?.body ? { "content-type": "application/json", ...init.headers } : init?.headers,
   });
   const body = await r.json().catch(() => ({}));
+  if (r.status === 401 && path !== "/api/login") dispatchEvent(new Event(LOGGED_OUT));
   if (!r.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${r.status}`);
   return body as T;
 }
 
 export const api = {
+  me: () => req<{ loggedIn: boolean }>("/api/me"),
+  login: (password: string) => req("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
+  logout: () => req("/api/logout", { method: "POST" }),
+  accounts: () => req<Account[]>("/api/accounts"),
+  disconnect: (p: Platform) => req(`/api/accounts/${p}`, { method: "DELETE" }),
+  retry: (postId: string) => req(`/api/posts/${postId}/retry`, { method: "POST" }),
   clips: (status?: Status) => req<Clip[]>(`/api/clips${status ? `?status=${status}` : ""}`),
   clip: (id: string) => req<Clip & { posts: Post[] }>(`/api/clips/${id}`),
   save: (id: string, fields: Partial<Pick<Clip, "title" | "caption_tiktok" | "caption_instagram">>) =>

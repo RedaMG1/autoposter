@@ -1,16 +1,15 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { encryptJson, safeEqual, sign, verify } from "./crypto";
+import type { Env } from "./env";
+import * as ig from "./instagram";
+import { refreshTokens, runDue } from "./publisher";
 import { pickSlot, type Taken } from "./slots";
 
-export interface Env {
-  DB: D1Database;
-  MEDIA: R2Bucket;
-  ASSETS: Fetcher;
-  TIMEZONE: string;
-  WORKER_TOKEN: string; // secret shared with the PC worker
-}
-
+export type { Env } from "./env";
 type App = { Bindings: Env };
 const app = new Hono<App>();
+const SESSION_DAYS = 30;
 
 const PLATFORMS = ["instagram", "tiktok", "youtube"] as const;
 const KEY_RE = /^clips\/[A-Za-z0-9_-]{1,64}\/(video\.mp4|thumb\.jpg)$/;
@@ -21,9 +20,44 @@ async function getSetting<T>(db: D1Database, key: string, fallback: T): Promise<
   return row ? (JSON.parse(row.value) as T) : fallback;
 }
 
-// ---------- public API (behind Cloudflare Access in production) ----------
+// ---------- login ----------
 
 app.get("/api/health", (c) => c.json({ ok: true }));
+
+async function sessionValid(c: Context<App>): Promise<boolean> {
+  const v = getCookie(c, "session");
+  if (!v || !c.env.SESSION_KEY) return false;
+  const [exp, sig] = v.split(".");
+  return Number(exp) * 1000 > Date.now() && (await verify(c.env.SESSION_KEY, `session:${exp}`, sig ?? ""));
+}
+
+app.post("/api/login", async (c) => {
+  const { password } = await c.req.json<{ password?: string }>().catch(() => ({ password: "" }));
+  if (!c.env.APP_PASSWORD || !c.env.SESSION_KEY) return c.json({ error: "login is not set up on the server" }, 500);
+  if (!password || !(await safeEqual(password, c.env.APP_PASSWORD))) {
+    await new Promise((r) => setTimeout(r, 800)); // slow down guessing
+    return c.json({ error: "wrong password" }, 401);
+  }
+  const exp = String(Math.floor(Date.now() / 1000) + SESSION_DAYS * 86_400);
+  setCookie(c, "session", `${exp}.${await sign(c.env.SESSION_KEY, `session:${exp}`)}`, {
+    httpOnly: true, secure: new URL(c.req.url).protocol === "https:", sameSite: "Lax", path: "/", maxAge: SESSION_DAYS * 86_400,
+  });
+  return c.json({ ok: true });
+});
+
+app.post("/api/logout", (c) => { deleteCookie(c, "session", { path: "/" }); return c.json({ ok: true }); });
+app.get("/api/me", async (c) => c.json({ loggedIn: await sessionValid(c) }));
+
+// Everything else under /api needs a login, except the PC worker API (own token)
+// and signed video links (platforms download them without a login).
+app.use("/api/*", async (c, next) => {
+  const p = c.req.path;
+  if (p.startsWith("/api/worker/") || p.startsWith("/api/public/")) return next();
+  if (!(await sessionValid(c))) return c.json({ error: "not logged in" }, 401);
+  return next();
+});
+
+// ---------- app API (needs login) ----------
 
 app.get("/api/clips", async (c) => {
   const status = c.req.query("status");
@@ -136,10 +170,83 @@ app.put("/api/settings", async (c) => {
   return c.json({ ok: true });
 });
 
+// ---------- accounts ----------
+
+app.get("/api/accounts", async (c) => {
+  const rows = (await c.env.DB.prepare("SELECT platform, display_name, expires_at FROM accounts WHERE tokens IS NOT NULL")
+    .all<{ platform: string; display_name: string; expires_at: string }>()).results;
+  const by = Object.fromEntries(rows.map((r) => [r.platform, r]));
+  return c.json(PLATFORMS.map((p) => ({
+    platform: p,
+    available: p === "instagram" && Boolean(c.env.IG_APP_ID && c.env.IG_APP_SECRET),
+    connected: Boolean(by[p]),
+    display_name: by[p]?.display_name ?? null,
+    expires_at: by[p]?.expires_at ?? null,
+  })));
+});
+
+app.delete("/api/accounts/:platform", async (c) => {
+  await c.env.DB.prepare("DELETE FROM accounts WHERE platform = ?").bind(c.req.param("platform")).run();
+  return c.json({ ok: true });
+});
+
+const redirectUri = (env: Env, platform: string) => `${env.PUBLIC_URL.replace(/\/$/, "")}/api/oauth/${platform}/callback`;
+
+app.get("/api/oauth/instagram/start", async (c) => {
+  if (!c.env.IG_APP_ID || !c.env.IG_APP_SECRET) return c.text("Instagram app keys are not set on the server yet.", 400);
+  const nonce = crypto.randomUUID();
+  const state = `${nonce}.${await sign(c.env.SESSION_KEY, `oauth:instagram:${nonce}`)}`;
+  return c.redirect(ig.authorizeUrl(c.env.IG_APP_ID, redirectUri(c.env, "instagram"), state));
+});
+
+app.get("/api/oauth/instagram/callback", async (c) => {
+  const back = (msg: string) => c.redirect(`/#settings?msg=${encodeURIComponent(msg)}`);
+  const [nonce, sig] = (c.req.query("state") ?? "").split(".");
+  if (!nonce || !(await verify(c.env.SESSION_KEY, `oauth:instagram:${nonce}`, sig ?? ""))) return back("Instagram: invalid state, try again");
+  const code = c.req.query("code");
+  if (!code) return back(`Instagram: ${c.req.query("error_description") ?? "connection cancelled"}`);
+  try {
+    const r = await ig.connect(fetch, c.env.IG_APP_ID!, c.env.IG_APP_SECRET!, redirectUri(c.env, "instagram"), code.replace(/#_$/, ""));
+    await c.env.DB.prepare(
+      `INSERT INTO accounts (platform, display_name, tokens, expires_at) VALUES ('instagram', ?, ?, ?)
+       ON CONFLICT(platform) DO UPDATE SET display_name = excluded.display_name, tokens = excluded.tokens, expires_at = excluded.expires_at`)
+      .bind(`@${r.username}`, await encryptJson(c.env.TOKEN_KEY, r.tokens), r.expires_at).run();
+    return back(`Instagram connected as @${r.username}`);
+  } catch (e) {
+    return back(`Instagram: ${(e as Error).message}`);
+  }
+});
+
+/** Retry a failed post now (or at its time, if that is still ahead). */
+app.post("/api/posts/:id/retry", async (c) => {
+  const r = await c.env.DB.prepare(
+    "UPDATE posts SET status = 'scheduled', attempts = 0, error = NULL, remote_id = NULL, scheduled_at = MAX(scheduled_at, ?) WHERE id = ? AND status = 'failed'")
+    .bind(new Date().toISOString(), c.req.param("id")).run();
+  if (!r.meta.changes) return c.json({ error: "not found or not failed" }, 404);
+  return c.json({ ok: true });
+});
+
+// ---------- media ----------
+
+/** Same as /api/media but for platforms: needs a valid signature instead of a login. */
+app.get("/api/public/media/*", async (c) => {
+  const key = c.req.path.slice("/api/public/media/".length);
+  const exp = c.req.query("exp") ?? "";
+  if (!KEY_RE.test(key) || Number(exp) * 1000 < Date.now() ||
+      !(await verify(c.env.SESSION_KEY, `media:${key}:${exp}`, c.req.query("sig") ?? ""))) {
+    return c.json({ error: "link expired or invalid" }, 403);
+  }
+  return serveMedia(c, key);
+});
+
 /** Stream a video or thumbnail from R2, with Range support so the <video> player can seek. */
 app.get("/api/media/*", async (c) => {
   const key = c.req.path.slice("/api/media/".length);
   if (!KEY_RE.test(key)) return c.json({ error: "bad key" }, 400);
+  return serveMedia(c, key);
+});
+
+async function serveMedia(c: Context<App>, key: string) {
   const range = parseRange(c.req.header("range"));
   const obj = await c.env.MEDIA.get(key, range ? { range } : undefined);
   if (!obj) return c.json({ error: "not found" }, 404);
@@ -156,7 +263,7 @@ app.get("/api/media/*", async (c) => {
   }
   headers.set("content-length", String(obj.size));
   return new Response(obj.body, { headers });
-});
+}
 
 function parseRange(h?: string): { offset: number; length?: number } | undefined {
   const m = h?.match(/^bytes=(\d+)-(\d*)$/);
@@ -173,14 +280,48 @@ app.use("/api/worker/*", async (c, next) => {
   await next();
 });
 
-/** Upload a clip file (video or thumbnail) straight into R2. */
+const contentType = (key: string) => (key.endsWith(".mp4") ? "video/mp4" : "image/jpeg");
+
+/** Upload a small file (under 90 MB) straight into R2. */
 app.put("/api/worker/upload/*", async (c) => {
   const key = c.req.path.slice("/api/worker/upload/".length);
   if (!KEY_RE.test(key)) return c.json({ error: "bad key" }, 400);
   if (!c.req.raw.body) return c.json({ error: "empty body" }, 400);
-  const type = key.endsWith(".mp4") ? "video/mp4" : "image/jpeg";
-  const obj = await c.env.MEDIA.put(key, c.req.raw.body, { httpMetadata: { contentType: type } });
+  const obj = await c.env.MEDIA.put(key, c.req.raw.body, { httpMetadata: { contentType: contentType(key) } });
   return c.json({ ok: true, key, size: obj?.size ?? 0 });
+});
+
+// Big files go up in parts (Cloudflare limits one request to 100 MB):
+// POST ?action=create -> uploadId; PUT ?uploadId&part=N (each part the same size, 5-90 MB, last can be smaller);
+// POST ?action=complete&uploadId with {parts:[{partNumber, etag}]}; POST ?action=abort&uploadId
+app.post("/api/worker/multipart/*", async (c) => {
+  const key = c.req.path.slice("/api/worker/multipart/".length);
+  if (!KEY_RE.test(key)) return c.json({ error: "bad key" }, 400);
+  const action = c.req.query("action");
+  if (action === "create") {
+    const mpu = await c.env.MEDIA.createMultipartUpload(key, { httpMetadata: { contentType: contentType(key) } });
+    return c.json({ uploadId: mpu.uploadId });
+  }
+  const uploadId = c.req.query("uploadId");
+  if (!uploadId) return c.json({ error: "uploadId required" }, 400);
+  const mpu = c.env.MEDIA.resumeMultipartUpload(key, uploadId);
+  if (action === "complete") {
+    const { parts } = await c.req.json<{ parts: R2UploadedPart[] }>();
+    const obj = await mpu.complete(parts);
+    return c.json({ ok: true, key, size: obj.size });
+  }
+  if (action === "abort") { await mpu.abort(); return c.json({ ok: true }); }
+  return c.json({ error: "unknown action" }, 400);
+});
+
+app.put("/api/worker/multipart/*", async (c) => {
+  const key = c.req.path.slice("/api/worker/multipart/".length);
+  const uploadId = c.req.query("uploadId");
+  const part = Number(c.req.query("part"));
+  if (!KEY_RE.test(key) || !uploadId || !Number.isInteger(part) || part < 1 || part > 10_000) return c.json({ error: "bad request" }, 400);
+  if (!c.req.raw.body) return c.json({ error: "empty body" }, 400);
+  const uploaded = await c.env.MEDIA.resumeMultipartUpload(key, uploadId).uploadPart(part, c.req.raw.body);
+  return c.json(uploaded);
 });
 
 /** Create (or update, by source + title) a clip record after its files are uploaded. */
@@ -208,10 +349,9 @@ app.all("/api/*", (c) => c.json({ error: "not found" }, 404));
 
 export default {
   fetch: app.fetch,
-  // Phase 2 adds the publishers; for now the cron only counts what is due.
   async scheduled(_ctrl: ScheduledController, env: Env) {
-    const due = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts WHERE status = 'scheduled' AND scheduled_at <= ?")
-      .bind(new Date().toISOString()).first<{ n: number }>();
-    console.log(`due posts: ${due?.n ?? 0} (publishers arrive in phase 2)`);
+    const stats = await runDue(env);
+    if (stats.started || stats.finished || stats.failed) console.log("publisher", JSON.stringify(stats));
+    try { await refreshTokens(env); } catch (e) { console.error("token refresh failed", (e as Error).message); }
   },
 } satisfies ExportedHandler<Env>;

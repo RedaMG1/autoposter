@@ -1,0 +1,15 @@
+export interface Env {
+  DB: D1Database;
+  MEDIA: R2Bucket;
+  ASSETS: Fetcher;
+  TIMEZONE: string;
+  /** https://... address of the deployed app (used for OAuth redirects and video links) */
+  PUBLIC_URL: string;
+  // secrets
+  WORKER_TOKEN: string; // shared with the PC worker
+  APP_PASSWORD: string; // your login password for the app
+  SESSION_KEY: string; // signs login cookies and video links
+  TOKEN_KEY: string; // encrypts platform tokens in the database
+  IG_APP_ID?: string;
+  IG_APP_SECRET?: string;
+}
