@@ -97,14 +97,9 @@ function Library({ notify }: { notify: (m: string) => void }) {
   }, [filter]);
   useEffect(() => { setClips(null); load(); }, [load]);
 
-  const act = async (id: string, what: "approve" | "skip" | "now") => {
+  const act = async (id: string, what: "approve" | "skip") => {
     try {
-      if (what === "now") {
-        const c = clips?.find((x) => x.id === id);
-        const msg = c && (await confirmPostNow(c));
-        if (!msg) return;
-        notify(msg);
-      } else if (what === "approve") {
+      if (what === "approve") {
         const r = await api.approve(id);
         notify(r.scheduled_at ? `Scheduled for ${fmtWhen(r.scheduled_at)}` : "Approved");
       } else {
@@ -141,10 +136,13 @@ function Library({ notify }: { notify: (m: string) => void }) {
               {c.score != null && <span class="score">{c.score.toFixed(1)}</span>}
             </div>
             <p class="title">{c.title}</p>
+            {c.status === "approved" && (
+              <div class="actions"><PostNowButton clipId={c.id} notify={notify} after={load} /></div>
+            )}
             {c.status === "waiting" && (
               <div class="actions">
                 <button class="primary" onClick={() => act(c.id, "approve")}>Approve</button>
-                <button onClick={() => act(c.id, "now")} title="Post right away instead of waiting for a slot">Post now</button>
+                <PostNowButton clipId={c.id} notify={notify} after={load} />
                 <button onClick={() => act(c.id, "skip")}>Skip</button>
               </div>
             )}
@@ -222,11 +220,7 @@ function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; n
                   }, "Approved and scheduled")}>Approve</button>
                 )}
                 {clip.posts.some((p) => p.status !== "posted") || clip.posts.length === 0 ? (
-                  <button disabled={busy} title="Post right away instead of waiting for a slot" onClick={async () => {
-                    if (dirty) await api.save(clip.id, draft);
-                    const msg = await confirmPostNow(clip);
-                    if (msg) { notify(msg); await load(); }
-                  }}>Post now</button>
+                  <PostNowButton clipId={clip.id} notify={notify} before={dirty ? () => api.save(clip.id, draft) : undefined} after={load} />
                 ) : null}
                 {clip.status !== "skipped" && (
                   <button disabled={busy} onClick={() => run(() => api.skip(clip.id), "Skipped")}>Skip</button>
@@ -322,13 +316,33 @@ function Calendar({ notify }: { notify: (m: string) => void }) {
 
 // ---------------- Settings ----------------
 
-/** Ask, then post now. Returns a message for the toast. */
-async function confirmPostNow(clip: Pick<Clip, "id" | "title">): Promise<string | null> {
-  if (!confirm(`Post "${clip.title}" now?
-
-It goes out within about a minute (your PC must be on).`)) return null;
-  const r = await api.postNow(clip.id);
-  return r.platforms.length ? `Posting now to ${r.platforms.map((p) => PLATFORM_LABEL[p]).join(", ")}` : "Already posted everywhere";
+/** Post now in two taps (no browser popup: some browsers and installed apps block them). */
+function PostNowButton({ clipId, notify, before, after }: {
+  clipId: string; notify: (m: string) => void; before?: () => Promise<unknown>; after?: () => unknown;
+}) {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  const go = async () => {
+    if (!armed) { setArmed(true); return; }
+    setArmed(false); setBusy(true);
+    try {
+      if (before) await before();
+      const r = await api.postNow(clipId);
+      notify(r.platforms.length ? `Posting now to ${r.platforms.map((p) => PLATFORM_LABEL[p]).join(", ")}: it goes out within about a minute` : "Already posted everywhere");
+      await after?.();
+    } catch (e) { notify(`Post now failed: ${(e as Error).message}`); }
+    setBusy(false);
+  };
+  return (
+    <button class={armed ? "primary" : ""} disabled={busy} onClick={go} title="Post right away instead of waiting for a slot">
+      {busy ? "Posting…" : armed ? "Tap again to post" : "Post now"}
+    </button>
+  );
 }
 
 function pcStatus(seen?: string | null): string {

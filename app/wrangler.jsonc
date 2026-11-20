@@ -26,6 +26,8 @@
     // Meta app "Autoposter" + its Instagram login configuration (the app secret is a Cloudflare secret)
     "IG_APP_ID": "1765237335172412",
     "IG_CONFIG_ID": "2056529495049245",
-    "IG_USER_ID": "17841475127975476"
+    "IG_USER_ID": "17841475127975476",
+    // Google OAuth client for YouTube (the client secret is a Cloudflare secret)
+    "YT_CLIENT_ID": "826705965869-qe11g1eobat4nvh4sf6c7kgbornldkgd.apps.googleusercontent.com"
   }
 }
