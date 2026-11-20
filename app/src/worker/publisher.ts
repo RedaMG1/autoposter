@@ -122,6 +122,7 @@ export async function runDue(env: Env, f: Fetch = fetch, now = Date.now()): Prom
         if (!p.remote_id) { if (stuck) { await retryOrFail(env, p, "the PC upload did not finish", false); stats.failed++; } continue; }
         const tokens = (await ttTokens(env, f))!;
         const s = await tt.status(f, tokens.access_token, p.remote_id);
+        console.log("tiktok status", p.id, JSON.stringify(s));
         if (s.status === "PUBLISH_COMPLETE" || s.status === "SEND_TO_USER_INBOX") {
           const postId = s.publicaly_available_post_id?.[0];
           const acct = await env.DB.prepare("SELECT display_name FROM accounts WHERE platform = 'tiktok'").first<{ display_name: string }>();

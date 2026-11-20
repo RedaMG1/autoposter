@@ -446,6 +446,10 @@ app.put("/api/worker/thumb/:id", async (c) => {
 });
 
 /** Posts whose time has come and whose video is on the PC. The PC poster calls this every minute. */
+// check posts in progress now instead of waiting for the 5-minute cron (PC poster or the app)
+app.post("/api/worker/check", async (c) => c.json(await runDue(c.env)));
+app.post("/api/check", async (c) => c.json(await runDue(c.env)));
+
 app.get("/api/worker/due", async (c) => {
   const now = new Date().toISOString();
   await c.env.DB.prepare("INSERT INTO settings (key, value) VALUES ('pc_last_seen', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
