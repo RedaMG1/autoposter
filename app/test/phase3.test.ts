@@ -192,24 +192,36 @@ describe("TikTok from the PC", () => {
     expect(brandedPrivate.status).toBe(400);
   });
 
-  it("an unaudited app on a public account sends the video to the TikTok inbox instead", async () => {
+  it("before TikTok approves the app, a public account post waits for approval instead of becoming a lost draft", async () => {
     const hits: string[] = [];
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = String(input);
       hits.push(url.replace("https://open.tiktokapis.com/v2", ""));
       if (url.endsWith("/creator_info/query/")) return Response.json({ data: { privacy_level_options: ["PUBLIC_TO_EVERYONE", "SELF_ONLY"] }, error: { code: "ok" } });
       if (url.endsWith("/post/publish/video/init/")) return Response.json({ error: { code: "unaudited_client_can_only_post_to_private_accounts", message: "Please review our integration guidelines" } }, { status: 403 });
-      if (url.endsWith("/inbox/video/init/")) return Response.json({ data: { publish_id: "inb1", upload_url: "https://upload.tiktok/inbox" }, error: { code: "ok" } });
       return new Response("{}", { status: 404 });
     });
     await connect("tiktok");
     await duePc("t4", "tiktok");
+    await call("/api/clips/t4", { method: "PATCH", body: JSON.stringify({ tt_settings: { privacy: "PUBLIC_TO_EVERYONE", comment: true } }) });
     const r = await call("/api/worker/posts/t4-tiktok/start", { method: "POST", headers: WORKER, body: JSON.stringify({ file_size: 5000 }) });
-    expect(await r.json()).toMatchObject({ kind: "tiktok", upload_url: "https://upload.tiktok/inbox", privacy: "INBOX" });
-    expect(hits).toContain("/post/publish/inbox/video/init/");
-    expect(await post("t4-tiktok")).toMatchObject({ status: "posting", remote_id: "inb1" });
+    expect(r.status).toBe(502);
+    expect(hits).not.toContain("/post/publish/inbox/video/init/");
+    const p = await post("t4-tiktok");
+    expect(p?.status).toBe("failed");
+    expect(String(p?.error)).toContain("waiting for TikTok to approve the app");
     const detail = await call("/api/clips/t4");
     expect(((await detail.json()) as { tiktok_caption: string }).tiktok_caption).toContain("#fyp");
+  });
+
+  it("a draft that only reached the inbox is not counted as posted", async () => {
+    await connect("tiktok");
+    await duePc("t8", "tiktok");
+    await env.DB.prepare("UPDATE posts SET status = 'posting', remote_id = 'd8', posting_started_at = ? WHERE id = 't8-tiktok'").bind(new Date().toISOString()).run();
+    await runDue(E, (async () => Response.json({ data: { status: "SEND_TO_USER_INBOX" }, error: { code: "ok" } })) as typeof fetch);
+    const p = await post("t8-tiktok");
+    expect(p?.status).toBe("failed");
+    expect(String(p?.error)).toContain("not on your profile");
   });
 
   it("a TikTok failure is reported with its reason", async () => {

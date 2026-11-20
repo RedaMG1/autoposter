@@ -530,8 +530,9 @@ async function startUpload(c: Context<App>, platformFilter?: string) {
         privacy = choices.privacy;
       } catch (e) {
         if (!tt.isUnaudited(e)) throw e;
-        // Before TikTok audits the app, a public account can only get drafts: send it to the TikTok inbox
-        r = await tt.initInbox(fetch, tokens.access_token, file_size!);
+        // Before TikTok approves the app it won't post to a public account (and inbox drafts don't reliably
+        // arrive): stop here so it can be retried once approved, without wasting the daily draft limit.
+        throw new tt.TtError("waiting for TikTok to approve the app: retry this once it's approved", 403, "unaudited_client_can_only_post_to_private_accounts");
       }
     }
     await setRemote(r.publish_id);

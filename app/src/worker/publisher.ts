@@ -11,6 +11,8 @@ import * as yt from "./youtube";
 type Fetch = typeof fetch;
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 60 * 60_000;
+export const DRAFT_ONLY = "not on your profile: TikTok only accepted it as an inbox draft until it approves the app. Retry once approved, or post it by hand (copy caption)";
+
 export const PLATFORM_NAME = { instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube" } as const;
 
 export interface PostRow {
@@ -123,13 +125,19 @@ export async function runDue(env: Env, f: Fetch = fetch, now = Date.now()): Prom
         const tokens = (await ttTokens(env, f))!;
         const s = await tt.status(f, tokens.access_token, p.remote_id);
         console.log("tiktok status", p.id, JSON.stringify(s));
-        if (s.status === "PUBLISH_COMPLETE" || s.status === "SEND_TO_USER_INBOX") {
+        if (s.status === "SEND_TO_USER_INBOX") {
+          // Only a draft: it is not on the profile. Leave it as not posted so it can be retried
+          // once TikTok approves the app (then it posts directly).
+          await env.DB.prepare("UPDATE posts SET status = 'failed', error = ? WHERE id = ?")
+            .bind(DRAFT_ONLY, p.id).run();
+          stats.finished++;
+        } else if (s.status === "PUBLISH_COMPLETE") {
           const postId = s.publicaly_available_post_id?.[0];
           const acct = await env.DB.prepare("SELECT display_name FROM accounts WHERE platform = 'tiktok'").first<{ display_name: string }>();
           const user = acct?.display_name?.startsWith("@") ? acct.display_name : "";
           const url = postId && user ? `https://www.tiktok.com/${user}/video/${postId}` : user ? `https://www.tiktok.com/${user}` : null;
           await env.DB.prepare("UPDATE posts SET status = 'posted', remote_url = ?, error = ? WHERE id = ?")
-            .bind(url, s.status === "SEND_TO_USER_INBOX" ? "sent to your TikTok inbox as a draft: open TikTok, tap the notification, paste the caption (copy caption here) and post" : null, p.id).run();
+            .bind(url, null, p.id).run();
           stats.finished++;
         } else if (s.status === "FAILED") {
           await retryOrFail(env, p, `TikTok could not publish: ${s.fail_reason ?? "unknown reason"}`, s.fail_reason === "spam_risk_too_many_posts"); stats.failed++;
