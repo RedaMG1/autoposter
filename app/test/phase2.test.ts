@@ -176,8 +176,12 @@ describe("Instagram publishing", () => {
     const { f } = fakeFetch({ "/42/media": () => new Response("{}", { status: 500 }) });
     await runDue(E, f);
     expect(await post("ig4-instagram")).toMatchObject({ status: "scheduled", attempts: 1 });
+    // waits before retrying: nothing happens right away
     await runDue(E, f);
-    await runDue(E, f);
+    expect(await post("ig4-instagram")).toMatchObject({ status: "scheduled", attempts: 1 });
+    await runDue(E, f, Date.now() + 16 * 60_000);
+    expect(await post("ig4-instagram")).toMatchObject({ status: "scheduled", attempts: 2 });
+    await runDue(E, f, Date.now() + 50 * 60_000);
     expect(await post("ig4-instagram")).toMatchObject({ status: "failed" });
   });
 

@@ -75,9 +75,10 @@ export async function retryOrFail(env: Env, p: Pick<PostRow, "id" | "attempts">,
   }
   const attempts = p.attempts + 1;
   if (permanent || attempts >= MAX_ATTEMPTS) return fail(env, p.id, error);
-  // back to scheduled, tried again on a later run
-  await env.DB.prepare("UPDATE posts SET status = 'scheduled', attempts = ?, error = ?, remote_id = NULL WHERE id = ?")
-    .bind(attempts, `retrying: ${error}`.slice(0, 500), p.id).run();
+  // back to scheduled, tried again later: 15 min after the 1st failure, 30 after the 2nd (temporary platform errors pass)
+  const later = new Date(Date.now() + attempts * 15 * 60_000).toISOString();
+  await env.DB.prepare("UPDATE posts SET status = 'scheduled', attempts = ?, error = ?, remote_id = NULL, scheduled_at = ? WHERE id = ?")
+    .bind(attempts, `retrying: ${error}`.slice(0, 500), later, p.id).run();
 }
 
 const isPermanent = (e: unknown) =>
