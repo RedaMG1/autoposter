@@ -108,3 +108,13 @@ a.button.primary { background: var(--accent); border-color: var(--accent); color
 
 .pcvideo img { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 12px; display: block; background: #000; }
 .pcvideo .hint { word-break: break-all; }
+
+/* TikTok posting choices */
+.ttbox { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line, #333); border-radius: 12px; margin: 8px 0 12px; }
+.ttwho { display: flex; gap: 10px; align-items: center; }
+.ttwho img { border-radius: 50%; object-fit: cover; }
+.ttallow { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.ttallow legend { font-size: 14px; margin-bottom: 4px; }
+.ttbrand { display: grid; gap: 6px; padding-left: 24px; }
+label.check { display: flex; gap: 8px; align-items: flex-start; font-weight: normal; }
+label.check input { width: auto; margin-top: 3px; }

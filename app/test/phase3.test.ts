@@ -122,12 +122,12 @@ describe("YouTube from the PC", () => {
 });
 
 describe("TikTok from the PC", () => {
-  it("start falls back to private when the app is not audited, then the cron sees it published", async () => {
-    let initBody: { post_info: { privacy_level: string; title: string }; source_info: { video_size: number } } | null = null;
+  it("posts with the creator's own choices, then the cron sees it published", async () => {
+    let initBody: { post_info: Record<string, unknown>; source_info: { video_size: number } } | null = null;
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith("/creator_info/query/")) return Response.json({ data: { privacy_level_options: ["SELF_ONLY"] }, error: { code: "ok" } });
-      if (url.endsWith("/video/init/")) {
+      if (url.endsWith("/creator_info/query/")) return Response.json({ data: { privacy_level_options: ["PUBLIC_TO_EVERYONE", "SELF_ONLY"], duet_disabled: true }, error: { code: "ok" } });
+      if (url.endsWith("/post/publish/video/init/")) {
         initBody = JSON.parse(String(init?.body));
         return Response.json({ data: { publish_id: "pub1", upload_url: "https://upload.tiktok/x" }, error: { code: "ok" } });
       }
@@ -135,10 +135,16 @@ describe("TikTok from the PC", () => {
     });
     await connect("tiktok");
     await duePc("t1", "tiktok");
+    const save = await call("/api/clips/t1", { method: "PATCH", body: JSON.stringify({ tt_settings: { privacy: "PUBLIC_TO_EVERYONE", comment: true, duet: true, stitch: false, brand_organic: true, brand_content: false } }) });
+    expect(save.status).toBe(200);
     const r = await call("/api/worker/posts/t1-tiktok/start", { method: "POST", headers: WORKER, body: JSON.stringify({ file_size: 5000 }) });
-    expect(await r.json()).toEqual({ kind: "tiktok", upload_url: "https://upload.tiktok/x", chunk_size: 5000, total_chunk_count: 1, privacy: "SELF_ONLY" });
-    expect(initBody!.post_info.privacy_level).toBe("SELF_ONLY");
-    expect(initBody!.post_info.title).toContain("#fyp");
+    expect(await r.json()).toEqual({ kind: "tiktok", upload_url: "https://upload.tiktok/x", chunk_size: 5000, total_chunk_count: 1, privacy: "PUBLIC_TO_EVERYONE" });
+    expect(initBody!.post_info).toMatchObject({
+      privacy_level: "PUBLIC_TO_EVERYONE", disable_comment: false,
+      disable_duet: true, // turned off in the creator's TikTok settings wins
+      disable_stitch: true, brand_organic_toggle: true, brand_content_toggle: false,
+    });
+    expect(String(initBody!.post_info.title)).toContain("#fyp");
     expect(await post("t1-tiktok")).toMatchObject({ status: "posting", remote_id: "pub1" });
 
     const f = (async (input: RequestInfo | URL) => String(input).endsWith("/status/fetch/")
@@ -146,6 +152,44 @@ describe("TikTok from the PC", () => {
       : new Response("{}", { status: 404 })) as typeof fetch;
     await runDue(E, f);
     expect(await post("t1-tiktok")).toMatchObject({ status: "posted", remote_url: "https://www.tiktok.com/@five.stars6/video/7311" });
+  });
+
+  it("without any TikTok choices the video goes to the inbox as a draft", async () => {
+    const hits: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = String(input); hits.push(url);
+      if (url.endsWith("/inbox/video/init/")) return Response.json({ data: { publish_id: "d1", upload_url: "https://upload.tiktok/d" }, error: { code: "ok" } });
+      return new Response("{}", { status: 404 });
+    });
+    await connect("tiktok");
+    await duePc("t5", "tiktok");
+    const r = await call("/api/worker/posts/t5-tiktok/start", { method: "POST", headers: WORKER, body: JSON.stringify({ file_size: 5000 }) });
+    expect(await r.json()).toMatchObject({ privacy: "INBOX", upload_url: "https://upload.tiktok/d" });
+    expect(hits.some((h) => h.endsWith("/post/publish/video/init/"))).toBe(false);
+  });
+
+  it("the default choices from Settings are used, and a choice TikTok no longer offers fails clearly", async () => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => String(input).endsWith("/creator_info/query/")
+      ? Response.json({ data: { privacy_level_options: ["SELF_ONLY"] }, error: { code: "ok" } })
+      : new Response("{}", { status: 404 }));
+    await connect("tiktok");
+    await duePc("t6", "tiktok");
+    const put = await call("/api/settings", { method: "PUT", body: JSON.stringify({ tiktok: { privacy: "PUBLIC_TO_EVERYONE" } }) });
+    expect(put.status).toBe(200);
+    const r = await call("/api/worker/posts/t6-tiktok/start", { method: "POST", headers: WORKER, body: JSON.stringify({ file_size: 5000 }) });
+    expect(r.status).toBe(502);
+    const p = await post("t6-tiktok");
+    expect(p?.status).toBe("failed");
+    expect(String(p?.error)).toContain("choose who can see it again");
+    await call("/api/settings", { method: "PUT", body: JSON.stringify({ tiktok: null }) });
+  });
+
+  it("refuses choices without a privacy pick, or branded content set to private", async () => {
+    await duePc("t7", "tiktok");
+    const noPick = await call("/api/clips/t7", { method: "PATCH", body: JSON.stringify({ tt_settings: { comment: true } }) });
+    expect(noPick.status).toBe(400);
+    const brandedPrivate = await call("/api/clips/t7", { method: "PATCH", body: JSON.stringify({ tt_settings: { privacy: "SELF_ONLY", brand_content: true } }) });
+    expect(brandedPrivate.status).toBe(400);
   });
 
   it("an unaudited app on a public account sends the video to the TikTok inbox instead", async () => {

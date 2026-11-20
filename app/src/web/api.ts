@@ -15,6 +15,15 @@ export interface Clip {
   score: number | null;
   status: Status;
   created_at: string;
+  tt_settings?: TtChoices | null;
+}
+
+/** The creator's choices for a TikTok post (TikTok requires them to be picked, not pre-set). */
+export interface TtChoices { privacy: string; comment: boolean; duet: boolean; stitch: boolean; brand_organic: boolean; brand_content: boolean }
+export interface TtCreator {
+  creator_avatar_url?: string; creator_username?: string; creator_nickname?: string;
+  privacy_level_options: string[]; comment_disabled?: boolean; duet_disabled?: boolean; stitch_disabled?: boolean;
+  max_video_post_duration_sec?: number;
 }
 
 export interface Post {
@@ -28,7 +37,7 @@ export interface Post {
 }
 
 export interface CalendarRow extends Post { title: string; streamer: string; thumb_key: string | null }
-export interface Settings { slots: string[]; platforms: Platform[]; auto_schedule: boolean; pc_last_seen?: string | null }
+export interface Settings { slots: string[]; platforms: Platform[]; auto_schedule: boolean; pc_last_seen?: string | null; tiktok?: TtChoices | null }
 
 export interface Account {
   platform: Platform;
@@ -62,7 +71,8 @@ export const api = {
   retry: (postId: string) => req(`/api/posts/${postId}/retry`, { method: "POST" }),
   clips: (status?: Status) => req<Clip[]>(`/api/clips${status ? `?status=${status}` : ""}`),
   clip: (id: string) => req<Clip & { posts: Post[] }>(`/api/clips/${id}`),
-  save: (id: string, fields: Partial<Pick<Clip, "title" | "caption_tiktok" | "caption_instagram">>) =>
+  tiktokCreator: () => req<TtCreator>("/api/tiktok/creator"),
+  save: (id: string, fields: Partial<Pick<Clip, "title" | "caption_tiktok" | "caption_instagram" | "tt_settings">>) =>
     req(`/api/clips/${id}`, { method: "PATCH", body: JSON.stringify(fields) }),
   approve: (id: string) => req<{ scheduled_at: string | null }>(`/api/clips/${id}/approve`, { method: "POST" }),
   skip: (id: string) => req(`/api/clips/${id}/skip`, { method: "POST" }),

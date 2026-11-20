@@ -77,7 +77,7 @@ app.get("/api/clips/:id", async (c) => {
     .bind(c.req.param("id")).all();
   // full TikTok caption with hashtags, to paste when a post went to the TikTok inbox as a draft
   const tiktok_caption = finalCaption("tiktok", clip as unknown as Parameters<typeof finalCaption>[1]);
-  return c.json({ ...clip, tiktok_caption, posts: posts.results });
+  return c.json({ ...clip, tt_settings: tt.parseSettings((clip as { tt_settings?: string }).tt_settings), tiktok_caption, posts: posts.results });
 });
 
 app.patch("/api/clips/:id", async (c) => {
@@ -87,6 +87,14 @@ app.patch("/api/clips/:id", async (c) => {
   const vals: unknown[] = [];
   for (const k of editable) {
     if (typeof body[k] === "string") { sets.push(`${k} = ?`); vals.push((body[k] as string).trim()); }
+  }
+  if ("tt_settings" in body) {
+    if (body.tt_settings === null) { sets.push("tt_settings = ?"); vals.push(null); }
+    else {
+      const ts = tt.parseSettings(body.tt_settings);
+      if (!ts) return c.json({ error: "choose who can see the TikTok post (branded content can't be private)" }, 400);
+      sets.push("tt_settings = ?"); vals.push(JSON.stringify(ts));
+    }
   }
   if (!sets.length) return c.json({ error: "nothing to update" }, 400);
   const r = await c.env.DB.prepare(`UPDATE clips SET ${sets.join(", ")} WHERE id = ?`)
@@ -195,13 +203,22 @@ app.put("/api/settings", async (c) => {
   const ok = (k: string, v: unknown) =>
     (k === "slots" && Array.isArray(v) && v.every((t) => typeof t === "string" && /^\d{2}:\d{2}$/.test(t))) ||
     (k === "platforms" && Array.isArray(v) && v.every((p) => (PLATFORMS as readonly string[]).includes(p as string))) ||
-    (k === "auto_schedule" && typeof v === "boolean");
+    (k === "auto_schedule" && typeof v === "boolean") ||
+    (k === "tiktok" && (v === null || tt.parseSettings(v) !== null));
   const entries = Object.entries(body).filter(([k, v]) => ok(k, v));
   if (!entries.length) return c.json({ error: "nothing valid to save" }, 400);
   await c.env.DB.batch(entries.map(([k, v]) =>
     c.env.DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .bind(k, JSON.stringify(v))));
   return c.json({ ok: true });
+});
+
+// What the TikTok account can choose right now (shown before posting, as TikTok requires)
+app.get("/api/tiktok/creator", async (c) => {
+  const tokens = await ttTokens(c.env);
+  if (!tokens) return c.json({ error: "TikTok is not connected" }, 404);
+  try { return c.json(await tt.creatorInfo(fetch, tokens.access_token)); }
+  catch (e) { return c.json({ error: (e as Error).message }, 502); }
 });
 
 // ---------- accounts ----------
@@ -497,15 +514,25 @@ async function startUpload(c: Context<App>, platformFilter?: string) {
     }
     const tokens = await ttTokens(c.env);
     if (!tokens) throw new tt.TtError("TikTok is not connected", 400);
-    let privacy = await tt.privacyFor(fetch, tokens.access_token, c.env.TT_PRIVACY || "PUBLIC_TO_EVERYONE");
+    // the creator's own choices for this clip, else their default from Settings
+    const choices = tt.parseSettings(p.tt_settings) ?? tt.parseSettings(await getSetting<unknown>(c.env.DB, "tiktok", null));
+    let privacy = "INBOX";
     let r: Awaited<ReturnType<typeof tt.initUpload>>;
-    try {
-      r = await tt.initUpload(fetch, tokens.access_token, file_size!, finalCaption("tiktok", p), privacy);
-    } catch (e) {
-      if (!tt.isUnaudited(e)) throw e;
-      // Before TikTok audits the app, a public account can only get drafts: send it to the TikTok inbox
+    if (!choices) {
+      // nothing chosen: send it as a draft, the creator picks everything in TikTok
       r = await tt.initInbox(fetch, tokens.access_token, file_size!);
-      privacy = "INBOX";
+    } else {
+      const info = await tt.creatorInfo(fetch, tokens.access_token);
+      const problem = tt.settingsProblem(choices, info, p.duration);
+      if (problem) throw new tt.TtError(problem, 400);
+      try {
+        r = await tt.initUpload(fetch, tokens.access_token, file_size!, finalCaption("tiktok", p), choices, info);
+        privacy = choices.privacy;
+      } catch (e) {
+        if (!tt.isUnaudited(e)) throw e;
+        // Before TikTok audits the app, a public account can only get drafts: send it to the TikTok inbox
+        r = await tt.initInbox(fetch, tokens.access_token, file_size!);
+      }
     }
     await setRemote(r.publish_id);
     return c.json({ kind: "tiktok", upload_url: r.upload_url, chunk_size: r.chunk_size, total_chunk_count: r.total_chunk_count, privacy });

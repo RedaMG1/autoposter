@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
+import { TikTokChoices } from "./TikTokChoices";
 import { api, fmtWhen, LOGGED_OUT, media, thumbUrl, toLocalInput, type Account, type CalendarRow, type Clip, type Platform, type Post, type Settings, type Status } from "./api";
 
 type Tab = "library" | "calendar" | "settings";
@@ -211,6 +212,9 @@ function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; n
               <label>Instagram caption
                 <textarea rows={4} value={draft.caption_instagram} onInput={(e) => setDraft({ ...draft, caption_instagram: e.currentTarget.value })} />
               </label>
+              <h3>TikTok post</h3>
+              <TikTokChoices value={clip.tt_settings} title={draft.title} duration={clip.duration}
+                onSave={(v) => run(() => api.save(clip.id, { tt_settings: v }), "TikTok choices saved")} />
               <div class="actions">
                 <button disabled={!dirty || busy} onClick={() => run(() => api.save(clip.id, draft), "Saved")}>Save text</button>
                 {clip.status !== "approved" && (
@@ -339,7 +343,9 @@ function PostNowButton({ clipId, notify, before, after }: {
     try {
       if (before) await before();
       const r = await api.postNow(clipId);
-      notify(r.platforms.length ? `Posting now to ${r.platforms.map((p) => PLATFORM_LABEL[p]).join(", ")}: it goes out within about a minute` : "Already posted everywhere");
+      notify(r.platforms.length
+        ? `Posting now to ${r.platforms.map((p) => PLATFORM_LABEL[p]).join(", ")}: it goes out within about a minute${r.platforms.includes("tiktok") ? " (TikTok can take a few more minutes to process it before it shows on your profile)" : ""}`
+        : "Already posted everywhere");
       await after?.();
     } catch (e) { notify(`Post now failed: ${(e as Error).message}`); }
     setBusy(false);
@@ -402,6 +408,10 @@ function SettingsPage({ notify }: { notify: (m: string) => void }) {
     <section class="settings">
       <h2>Accounts</h2>
       <Accounts notify={notify} />
+
+      <h2>TikTok default choices</h2>
+      <p class="hint">Used for clips where you didn't pick TikTok choices yourself. Without them, TikTok clips are sent to your TikTok inbox as drafts.</p>
+      <TikTokChoices value={s.tiktok} title="each approved clip" onSave={(v) => save({ ...s, tiktok: v })} />
 
       <h2>Your PC</h2>
       <p class="hint">{pcStatus(s.pc_last_seen)}</p>

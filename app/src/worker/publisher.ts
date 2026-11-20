@@ -16,11 +16,11 @@ export const PLATFORM_NAME = { instagram: "Instagram", tiktok: "TikTok", youtube
 export interface PostRow {
   id: string; clip_id: string; platform: "instagram" | "tiktok" | "youtube"; scheduled_at: string;
   status: string; remote_id: string | null; attempts: number;
-  title: string; streamer: string; caption_instagram: string; caption_tiktok: string; source_vod: string | null;
+  title: string; streamer: string; caption_instagram: string; caption_tiktok: string; source_vod: string | null; tt_settings?: string | null; duration?: number | null;
   video_key: string | null; local_path: string | null; posting_started_at: string | null;
 }
 
-export const POST_ROW_SQL = `SELECT p.*, c.title, c.streamer, c.caption_instagram, c.caption_tiktok, c.source_vod, c.video_key, c.local_path
+export const POST_ROW_SQL = `SELECT p.*, c.title, c.streamer, c.caption_instagram, c.caption_tiktok, c.source_vod, c.video_key, c.local_path, c.tt_settings, c.duration
   FROM posts p JOIN clips c ON c.id = p.clip_id`;
 
 /** Signed, time-limited public link so a platform can download a video (R2 mode only). */
