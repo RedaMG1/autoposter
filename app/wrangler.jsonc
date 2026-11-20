@@ -20,5 +20,9 @@
   ],
   // no R2: videos stay on the PC (pc-worker/poster.py uploads them at posting time)
   "triggers": { "crons": ["*/5 * * * *"] },
-  "vars": { "TIMEZONE": "Europe/Paris", "PUBLIC_URL": "https://autoposter.fivestars6.workers.dev" }
+  "vars": { "TIMEZONE": "Europe/Paris", "PUBLIC_URL": "https://autoposter.fivestars6.workers.dev",
+    // Meta app "Autoposter" + its Instagram login configuration (the app secret is a Cloudflare secret)
+    "IG_APP_ID": "1765237335172412",
+    "IG_CONFIG_ID": "2056529495049245"
+  }
 }

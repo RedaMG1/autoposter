@@ -1,8 +1,8 @@
-// Instagram API with Instagram Login: OAuth + Reels publishing.
-// Docs: developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login
+// Instagram API with "Unified login" (Facebook Login for Business + a configuration with an
+// Instagram account asset). New Meta apps can no longer use plain Instagram login.
+// The login gives a system-user token that never expires; Reels are published on graph.facebook.com.
 
-export const IG_GRAPH = "https://graph.instagram.com/v23.0";
-export const IG_SCOPES = "instagram_business_basic,instagram_business_content_publish";
+export const IG_GRAPH = "https://graph.facebook.com/v25.0";
 
 export interface IgTokens { access_token: string; user_id: string }
 type Fetch = typeof fetch;
@@ -23,34 +23,38 @@ export class IgError extends Error {
   get permanent() { return this.status >= 400 && this.status < 500 && this.status !== 429; }
 }
 
-export function authorizeUrl(appId: string, redirectUri: string, state: string): string {
-  const u = new URL("https://www.instagram.com/oauth/authorize");
+/** The login link Meta generates for the app's configuration (Facebook Login for Business). */
+export function authorizeUrl(appId: string, configId: string, redirectUri: string, state: string): string {
+  const u = new URL("https://www.facebook.com/v25.0/dialog/oauth");
   u.search = new URLSearchParams({
-    client_id: appId, redirect_uri: redirectUri, response_type: "code", scope: IG_SCOPES, state,
-    enable_fb_login: "0", force_reauth: "true",
+    client_id: appId, config_id: configId, redirect_uri: redirectUri, response_type: "code",
+    override_default_response_type: "true", state,
   }).toString();
   return u.toString();
 }
 
-/** code -> long-lived token (60 days) + username. */
+/** code -> system-user token (never expires) + the Instagram account it was granted for. */
 export async function connect(f: Fetch, appId: string, appSecret: string, redirectUri: string, code: string) {
-  const short = await igJson<{ access_token: string; user_id: string | number }>(
-    await f("https://api.instagram.com/oauth/access_token", {
-      method: "POST",
-      body: new URLSearchParams({
-        client_id: appId, client_secret: appSecret, grant_type: "authorization_code", redirect_uri: redirectUri, code,
-      }),
-    }), "token exchange");
-  const long = await igJson<{ access_token: string; expires_in: number }>(
-    await f(`https://graph.instagram.com/access_token?${new URLSearchParams({
-      grant_type: "ig_exchange_token", client_secret: appSecret, access_token: short.access_token,
-    })}`), "long-lived token");
-  const me = await igJson<{ user_id?: string; id: string; username: string }>(
-    await f(`${IG_GRAPH}/me?fields=user_id,username&access_token=${encodeURIComponent(long.access_token)}`), "profile");
+  const tok = await igJson<{ access_token: string; expires_in?: number }>(
+    await f(`${IG_GRAPH}/oauth/access_token?${new URLSearchParams({
+      client_id: appId, client_secret: appSecret, redirect_uri: redirectUri, code,
+    })}`), "token exchange");
+  // which Instagram account did the person pick? debug_token lists the granted asset ids per permission
+  const dbg = await igJson<{ data: { granular_scopes?: { scope: string; target_ids?: string[] }[] } }>(
+    await f(`${IG_GRAPH}/debug_token?${new URLSearchParams({
+      input_token: tok.access_token, access_token: `${appId}|${appSecret}`,
+    })}`), "check token");
+  const scopes = dbg.data.granular_scopes ?? [];
+  const igId = (scopes.find((s) => s.scope === "instagram_content_publish")?.target_ids
+    ?? scopes.find((s) => s.scope === "instagram_basic")?.target_ids ?? [])[0];
+  if (!igId) throw new IgError("no Instagram account was selected during login (it must be a Creator or Business account)", 400);
+  const me = await igJson<{ id: string; username: string }>(
+    await f(`${IG_GRAPH}/${igId}?fields=id,username&access_token=${encodeURIComponent(tok.access_token)}`), "profile");
   return {
-    tokens: { access_token: long.access_token, user_id: String(me.user_id ?? short.user_id) } satisfies IgTokens,
+    tokens: { access_token: tok.access_token, user_id: me.id } satisfies IgTokens,
     username: me.username,
-    expires_at: new Date(Date.now() + long.expires_in * 1000).toISOString(),
+    // system-user tokens from this configuration never expire
+    expires_at: tok.expires_in ? new Date(Date.now() + tok.expires_in * 1000).toISOString() : null,
   };
 }
 

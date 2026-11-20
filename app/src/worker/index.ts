@@ -178,7 +178,7 @@ app.get("/api/accounts", async (c) => {
   const by = Object.fromEntries(rows.map((r) => [r.platform, r]));
   return c.json(PLATFORMS.map((p) => ({
     platform: p,
-    available: p === "instagram" && Boolean(c.env.IG_APP_ID && c.env.IG_APP_SECRET),
+    available: p === "instagram" && Boolean(c.env.IG_APP_ID && c.env.IG_CONFIG_ID && c.env.IG_APP_SECRET),
     connected: Boolean(by[p]),
     display_name: by[p]?.display_name ?? null,
     expires_at: by[p]?.expires_at ?? null,
@@ -193,10 +193,10 @@ app.delete("/api/accounts/:platform", async (c) => {
 const redirectUri = (env: Env, platform: string) => `${env.PUBLIC_URL.replace(/\/$/, "")}/api/oauth/${platform}/callback`;
 
 app.get("/api/oauth/instagram/start", async (c) => {
-  if (!c.env.IG_APP_ID || !c.env.IG_APP_SECRET) return c.text("Instagram app keys are not set on the server yet.", 400);
+  if (!c.env.IG_APP_ID || !c.env.IG_CONFIG_ID || !c.env.IG_APP_SECRET) return c.text("Instagram app keys are not set on the server yet.", 400);
   const nonce = crypto.randomUUID();
   const state = `${nonce}.${await sign(c.env.SESSION_KEY, `oauth:instagram:${nonce}`)}`;
-  return c.redirect(ig.authorizeUrl(c.env.IG_APP_ID, redirectUri(c.env, "instagram"), state));
+  return c.redirect(ig.authorizeUrl(c.env.IG_APP_ID, c.env.IG_CONFIG_ID, redirectUri(c.env, "instagram"), state));
 });
 
 app.get("/api/oauth/instagram/callback", async (c) => {

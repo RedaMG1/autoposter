@@ -216,6 +216,32 @@ describe("Instagram publishing", () => {
   });
 });
 
+describe("Instagram unified login", () => {
+  it("turns the login code into a never-expiring token for the picked Instagram account", async () => {
+    const { connect, authorizeUrl } = await import("../src/worker/instagram");
+    const { f, calls } = fakeFetch({
+      "/oauth/access_token": (u) => { expect(u.searchParams.get("code")).toBe("CODE"); return { access_token: "SUAT" }; },
+      "/debug_token": () => ({ data: { granular_scopes: [{ scope: "instagram_basic", target_ids: ["999"] }, { scope: "instagram_content_publish", target_ids: ["999"] }] } }),
+      "/999": () => ({ id: "999", username: "five.stars6" }),
+    });
+    const r = await connect(f, "APP", "SECRET", "https://app.test/cb", "CODE");
+    expect(r).toEqual({ tokens: { access_token: "SUAT", user_id: "999" }, username: "five.stars6", expires_at: null });
+    expect(calls).toEqual(["GET /v25.0/oauth/access_token", "GET /v25.0/debug_token", "GET /v25.0/999"]);
+    const url = new URL(authorizeUrl("APP", "CFG", "https://app.test/cb", "st"));
+    expect(url.searchParams.get("config_id")).toBe("CFG");
+    expect(url.hostname).toBe("www.facebook.com");
+  });
+
+  it("explains when no Instagram account was picked", async () => {
+    const { connect } = await import("../src/worker/instagram");
+    const { f } = fakeFetch({
+      "/oauth/access_token": () => ({ access_token: "SUAT" }),
+      "/debug_token": () => ({ data: { granular_scopes: [] } }),
+    });
+    await expect(connect(f, "APP", "SECRET", "https://app.test/cb", "CODE")).rejects.toThrow(/Creator or Business/);
+  });
+});
+
 describe("accounts", () => {
   it("shows Instagram as unavailable until the app keys are set", async () => {
     const list = await (await call("/api/accounts")).json<{ platform: string; available: boolean }[]>();

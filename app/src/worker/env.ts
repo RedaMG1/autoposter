@@ -11,6 +11,8 @@ export interface Env {
   APP_PASSWORD: string; // your login password for the app
   SESSION_KEY: string; // signs login cookies and video links
   TOKEN_KEY: string; // encrypts platform tokens in the database
+  /** Meta app id and Facebook Login for Business configuration id (not secret) */
   IG_APP_ID?: string;
-  IG_APP_SECRET?: string;
+  IG_CONFIG_ID?: string;
+  IG_APP_SECRET?: string; // secret
 }
