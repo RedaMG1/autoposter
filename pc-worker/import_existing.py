@@ -1,0 +1,160 @@
+"""Upload the finished clips in Desktop/clips/<Streamer>/ into the autoposter app.
+
+Usage:  python import_existing.py [--clips DIR] [--api URL] [--only NAME_PART]
+
+Reads each "<Streamer> - <moment> (GTA 6).mp4" and its "- post.md", makes a thumbnail,
+uploads the full-quality mp4 + thumbnail, and creates the clip as "to review".
+Safe to run again: clips are keyed by a stable id, so re-running updates them.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_CLIPS = Path.home() / "Desktop" / "clips"
+
+
+def load_env() -> dict[str, str]:
+    env = {}
+    f = HERE / ".env"
+    if f.exists():
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    return {**env, **{k: v for k, v in os.environ.items() if k.startswith("AUTOPOSTER_")}}
+
+
+def clip_id(path: Path) -> str:
+    """Stable id from the file name, so re-imports update instead of duplicating."""
+    slug = re.sub(r"[^a-z0-9]+", "-", path.stem.lower()).strip("-")[:40]
+    return f"{slug}-{hashlib.sha1(path.stem.encode()).hexdigest()[:6]}"
+
+
+def section(text: str, name: str) -> str:
+    m = re.search(rf"^## {re.escape(name)}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    return m.group(1).strip() if m else ""
+
+
+def parse_post(md: str) -> dict:
+    shorts = section(md, "YouTube Shorts")
+    title = re.search(r"^Title: (.+)$", shorts, re.M)
+    score = re.search(r"score ([0-9.]+)", md)
+    hook = re.search(r"^Hook: (.+)$", md, re.M)
+    vod = re.search(r"https://www\.twitch\.tv/videos/\d+", md)
+    return {
+        "title": title.group(1).strip() if title else md.splitlines()[0].lstrip("# ").strip(),
+        "caption_tiktok": section(md, "TikTok"),
+        "caption_instagram": section(md, "Instagram Reels"),
+        "hook": hook.group(1).strip() if hook else "",
+        "score": float(score.group(1)) if score else None,
+        "source_vod": vod.group(0) if vod else "",
+    }
+
+
+def duration(mp4: Path) -> float | None:
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(mp4)],
+                             capture_output=True, text=True, check=True).stdout
+        return round(float(out), 2)
+    except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
+        return None
+
+
+def thumbnail(mp4: Path, out: Path) -> bool:
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "1.5", "-i", str(mp4), "-frames:v", "1",
+                        "-vf", "scale=360:-2", "-q:v", "4", str(out)], capture_output=True)
+    return r.returncode == 0 and out.exists()
+
+
+class Api:
+    def __init__(self, base: str, token: str):
+        self.base, self.token = base.rstrip("/"), token
+
+    def _send(self, method: str, path: str, data=None, headers=None) -> dict:
+        h = {"authorization": f"Bearer {self.token}", **(headers or {})}
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=h)
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                return json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"{method} {path} -> {e.code}: {e.read()[:300]!r}") from None
+
+    def upload(self, key: str, file: Path, attempts: int = 3) -> dict:
+        size = file.stat().st_size
+        for n in range(1, attempts + 1):
+            try:
+                with open(file, "rb") as fh:  # streamed, never loaded into memory
+                    return self._send("PUT", f"/api/worker/upload/{key}", data=fh, headers={"content-length": str(size)})
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                if n == attempts:
+                    raise
+                print(f"    upload retry {n}/{attempts - 1} after: {e}")
+        raise AssertionError("unreachable")
+
+    def create_clip(self, clip: dict) -> dict:
+        return self._send("POST", "/api/worker/clips", data=json.dumps(clip).encode(),
+                          headers={"content-type": "application/json"})
+
+
+def find_clips(root: Path) -> list[tuple[str, Path, Path]]:
+    out = []
+    for d in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("_")):
+        for mp4 in sorted(d.glob("*.mp4")):
+            md = mp4.with_name(mp4.stem + " - post.md")
+            if md.exists():
+                out.append((d.name, mp4, md))
+            else:
+                print(f"  skip (no post.md): {mp4.name}")
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = load_env()
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--clips", type=Path, default=DEFAULT_CLIPS)
+    ap.add_argument("--api", default=env.get("AUTOPOSTER_API", "http://127.0.0.1:8787"))
+    ap.add_argument("--only", default="", help="import only files whose name contains this text")
+    a = ap.parse_args(argv)
+    token = env.get("AUTOPOSTER_WORKER_TOKEN", "")
+    if not token:
+        print("AUTOPOSTER_WORKER_TOKEN missing (pc-worker/.env)")
+        return 2
+    api = Api(a.api, token)
+    clips = [c for c in find_clips(a.clips) if a.only.lower() in c[1].name.lower()]
+    print(f"{len(clips)} clips in {a.clips} -> {a.api}")
+    failed = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, (streamer, mp4, md) in enumerate(clips, 1):
+            cid = clip_id(mp4)
+            try:
+                meta = parse_post(md.read_text(encoding="utf-8"))
+                video_key = f"clips/{cid}/video.mp4"
+                api.upload(video_key, mp4)
+                thumb = Path(tmp) / f"{cid}.jpg"
+                thumb_key = f"clips/{cid}/thumb.jpg" if thumbnail(mp4, thumb) else ""
+                if thumb_key:
+                    api.upload(thumb_key, thumb)
+                api.create_clip({"id": cid, "streamer": streamer, **meta, "video_key": video_key,
+                                 "thumb_key": thumb_key, "duration": duration(mp4)})
+                print(f"  [{i}/{len(clips)}] {mp4.stem}  ({mp4.stat().st_size / 1e6:.0f} MB)")
+            except Exception as e:  # keep going, report at the end
+                failed += 1
+                print(f"  [{i}/{len(clips)}] FAILED {mp4.stem}: {e}")
+    print(f"done: {len(clips) - failed} imported, {failed} failed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

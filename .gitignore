@@ -8,3 +8,4 @@ __pycache__/
 # leftovers from the clipping session (not part of the app)
 method-2/
 upload/
+.env
