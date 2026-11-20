@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.log
+__pycache__/
+.venv/
+# leftovers from the clipping session (not part of the app)
+method-2/
+upload/

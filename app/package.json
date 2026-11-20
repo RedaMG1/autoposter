@@ -1,0 +1,27 @@
+{
+  "name": "autoposter",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vite build && wrangler dev --ip 0.0.0.0",
+    "build": "vite build",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "dependencies": {
+    "hono": "^4.13.19",
+    "preact": "^11.2.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.5",
+    "@cloudflare/workers-types": "^5.20261120.1",
+    "@preact/preset-vite": "^2.10.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.165.0"
+  },
+  "private": true
+}
