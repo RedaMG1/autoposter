@@ -42,11 +42,25 @@ async function token(f: Fetch, body: Record<string, string>) {
 
 export async function connect(f: Fetch, clientKey: string, clientSecret: string, redirectUri: string, code: string, now = Date.now()) {
   const t = await token(f, { client_key: clientKey, client_secret: clientSecret, code, grant_type: "authorization_code", redirect_uri: redirectUri });
-  const me = await json<{ user: { display_name?: string; username?: string } }>(
-    await f(`${API}/user/info/?fields=display_name,username`, { headers: { authorization: `Bearer ${t.access_token}` } }), "profile");
+  // The @username comes from creator info (video.publish scope); user/info only gives the display name
+  // without the extra user.info.profile scope. Neither is required to connect.
+  const auth = { authorization: `Bearer ${t.access_token}`, "content-type": "application/json; charset=UTF-8" };
+  let name = "TikTok";
+  try {
+    const c = await json<{ creator_username?: string; creator_nickname?: string }>(
+      await f(`${API}/post/publish/creator_info/query/`, { method: "POST", headers: auth, body: "{}" }), "creator");
+    if (c.creator_username) name = `@${c.creator_username}`;
+    else if (c.creator_nickname) name = c.creator_nickname;
+  } catch {
+    try {
+      const me = await json<{ user: { display_name?: string } }>(
+        await f(`${API}/user/info/?fields=display_name`, { headers: { authorization: auth.authorization } }), "profile");
+      if (me.user.display_name) name = me.user.display_name;
+    } catch { /* keep the default name */ }
+  }
   return {
     tokens: { access_token: t.access_token, refresh_token: t.refresh_token, expires_at: now + (t.expires_in - 60) * 1000, open_id: t.open_id } satisfies TtTokens,
-    name: me.user.username ? `@${me.user.username}` : me.user.display_name ?? "TikTok",
+    name,
   };
 }
 

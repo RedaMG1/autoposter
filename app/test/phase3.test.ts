@@ -176,6 +176,17 @@ describe("connect links", () => {
     expect(u.searchParams.get("access_type")).toBe("offline");
     expect(u.searchParams.get("scope")).toContain("youtube.upload");
   });
+  it("TikTok connects with just the basic scopes and takes the @username from creator info", async () => {
+    const f = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/oauth/token/")) return Response.json({ access_token: "a", refresh_token: "r", expires_in: 86400, open_id: "o" });
+      if (url.endsWith("/creator_info/query/")) return Response.json({ data: { creator_username: "five.stars1712" }, error: { code: "ok" } });
+      return Response.json({ error: { code: "scope_not_authorized", message: "The user did not authorize the scope" } }, { status: 401 });
+    }) as typeof fetch;
+    const r = await tt.connect(f, "ck", "cs", "https://app.test/cb", "code");
+    expect(r.name).toBe("@five.stars1712");
+    expect(r.tokens.open_id).toBe("o");
+  });
   it("TikTok asks for the posting scopes", () => {
     const u = new URL(tt.authorizeUrl("ck", "https://app.test/cb", "st"));
     expect(u.searchParams.get("scope")).toBe("user.info.basic,video.publish,video.upload");
