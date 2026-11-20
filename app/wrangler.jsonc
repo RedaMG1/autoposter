@@ -20,5 +20,5 @@
   ],
   // no R2: videos stay on the PC (pc-worker/poster.py uploads them at posting time)
   "triggers": { "crons": ["*/5 * * * *"] },
-  "vars": { "TIMEZONE": "Europe/Paris" }
+  "vars": { "TIMEZONE": "Europe/Paris", "PUBLIC_URL": "https://autoposter.fivestars6.workers.dev" }
 }

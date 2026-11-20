@@ -25,6 +25,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_CLIPS = Path.home() / "Desktop" / "clips"
 SINGLE_UPLOAD_MAX = 90 * 1024 * 1024  # Cloudflare's request limit is 100 MB
+USER_AGENT = "autoposter-pc/1.0"  # Cloudflare blocks the default "Python-urllib" agent (error 1010)
 PART_SIZE = 50 * 1024 * 1024
 
 
@@ -91,7 +92,7 @@ class Api:
         self.base, self.token = base.rstrip("/"), token
 
     def _send(self, method: str, path: str, data=None, headers=None) -> dict:
-        h = {"authorization": f"Bearer {self.token}", **(headers or {})}
+        h = {"authorization": f"Bearer {self.token}", "user-agent": USER_AGENT, **(headers or {})}
         req = urllib.request.Request(self.base + path, data=data, method=method, headers=h)
         try:
             with urllib.request.urlopen(req, timeout=600) as r:

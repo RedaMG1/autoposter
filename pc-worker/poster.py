@@ -34,6 +34,7 @@ def upload_to_instagram(upload_uri: str, access_token: str, file: Path, timeout:
             "file_size": str(size),
             "content-length": str(size),
             "content-type": "application/octet-stream",
+            "user-agent": "autoposter-pc/1.0",
         })
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
