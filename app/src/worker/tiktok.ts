@@ -102,6 +102,22 @@ export async function initUpload(f: Fetch, accessToken: string, size: number, ca
   return { publish_id: d.publish_id, upload_url: d.upload_url, chunk_size, total_chunk_count };
 }
 
+/** Direct posting refused because the app is not audited yet and the account is public. */
+export const isUnaudited = (e: unknown) =>
+  e instanceof TtError && (e.code === "unaudited_client_can_only_post_to_private_accounts" || /integration guidelines/i.test(e.message));
+
+/** Send the video to the creator's TikTok inbox as a draft (works before the audit, on public accounts). */
+export async function initInbox(f: Fetch, accessToken: string, size: number) {
+  const { chunk_size, total_chunk_count } = chunking(size);
+  const d = await json<{ publish_id: string; upload_url: string }>(
+    await f(`${API}/post/publish/inbox/video/init/`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json; charset=UTF-8" },
+      body: JSON.stringify({ source_info: { source: "FILE_UPLOAD", video_size: size, chunk_size, total_chunk_count } }),
+    }), "send to inbox");
+  return { publish_id: d.publish_id, upload_url: d.upload_url, chunk_size, total_chunk_count };
+}
+
 export type TtStatus = "PROCESSING_UPLOAD" | "PROCESSING_DOWNLOAD" | "SEND_TO_USER_INBOX" | "PUBLISH_COMPLETE" | "FAILED";
 
 export async function status(f: Fetch, accessToken: string, publishId: string) {

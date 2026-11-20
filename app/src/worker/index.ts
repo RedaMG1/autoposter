@@ -75,7 +75,9 @@ app.get("/api/clips/:id", async (c) => {
   if (!clip) return c.json({ error: "not found" }, 404);
   const posts = await c.env.DB.prepare("SELECT * FROM posts WHERE clip_id = ? ORDER BY platform")
     .bind(c.req.param("id")).all();
-  return c.json({ ...clip, posts: posts.results });
+  // full TikTok caption with hashtags, to paste when a post went to the TikTok inbox as a draft
+  const tiktok_caption = finalCaption("tiktok", clip as unknown as Parameters<typeof finalCaption>[1]);
+  return c.json({ ...clip, tiktok_caption, posts: posts.results });
 });
 
 app.patch("/api/clips/:id", async (c) => {
@@ -491,8 +493,16 @@ async function startUpload(c: Context<App>, platformFilter?: string) {
     }
     const tokens = await ttTokens(c.env);
     if (!tokens) throw new tt.TtError("TikTok is not connected", 400);
-    const privacy = await tt.privacyFor(fetch, tokens.access_token, c.env.TT_PRIVACY || "PUBLIC_TO_EVERYONE");
-    const r = await tt.initUpload(fetch, tokens.access_token, file_size!, finalCaption("tiktok", p), privacy);
+    let privacy = await tt.privacyFor(fetch, tokens.access_token, c.env.TT_PRIVACY || "PUBLIC_TO_EVERYONE");
+    let r: Awaited<ReturnType<typeof tt.initUpload>>;
+    try {
+      r = await tt.initUpload(fetch, tokens.access_token, file_size!, finalCaption("tiktok", p), privacy);
+    } catch (e) {
+      if (!tt.isUnaudited(e)) throw e;
+      // Before TikTok audits the app, a public account can only get drafts: send it to the TikTok inbox
+      r = await tt.initInbox(fetch, tokens.access_token, file_size!);
+      privacy = "INBOX";
+    }
     await setRemote(r.publish_id);
     return c.json({ kind: "tiktok", upload_url: r.upload_url, chunk_size: r.chunk_size, total_chunk_count: r.total_chunk_count, privacy });
   } catch (e) {

@@ -157,7 +157,7 @@ function Library({ notify }: { notify: (m: string) => void }) {
 // ---------------- Clip detail ----------------
 
 function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; notify: (m: string) => void }) {
-  const [clip, setClip] = useState<(Clip & { posts: Post[] }) | null>(null);
+  const [clip, setClip] = useState<(Clip & { posts: Post[]; tiktok_caption?: string }) | null>(null);
   const [draft, setDraft] = useState({ title: "", caption_tiktok: "", caption_instagram: "" });
   const [when, setWhen] = useState("");
   const [busy, setBusy] = useState(false);
@@ -244,6 +244,12 @@ function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; n
                         <span class="when">{fmtWhen(p.scheduled_at)}</span>
                         {p.remote_url && <a href={p.remote_url} target="_blank" rel="noreferrer">open</a>}
                         {p.error && <span class="err" title={p.error}>{p.error}</span>}
+                        {p.platform === "tiktok" && clip.tiktok_caption && (
+                          <button class="link" onClick={async () => {
+                            try { await navigator.clipboard.writeText(clip.tiktok_caption!); notify("TikTok caption copied: paste it when you post the draft"); }
+                            catch { notify("Could not copy: select the caption text instead"); }
+                          }}>copy caption</button>
+                        )}
                         {p.status === "failed" && (
                           <button class="link" disabled={busy} onClick={() => run(() => api.retry(p.id), `${PLATFORM_LABEL[p.platform]}: will try again`)}>retry</button>
                         )}

@@ -128,7 +128,7 @@ export async function runDue(env: Env, f: Fetch = fetch, now = Date.now()): Prom
           const user = acct?.display_name?.startsWith("@") ? acct.display_name : "";
           const url = postId && user ? `https://www.tiktok.com/${user}/video/${postId}` : user ? `https://www.tiktok.com/${user}` : null;
           await env.DB.prepare("UPDATE posts SET status = 'posted', remote_url = ?, error = ? WHERE id = ?")
-            .bind(url, s.status === "SEND_TO_USER_INBOX" ? "sent to your TikTok inbox: open TikTok to finish posting" : null, p.id).run();
+            .bind(url, s.status === "SEND_TO_USER_INBOX" ? "sent to your TikTok inbox as a draft: open TikTok, tap the notification, paste the caption (copy caption here) and post" : null, p.id).run();
           stats.finished++;
         } else if (s.status === "FAILED") {
           await retryOrFail(env, p, `TikTok could not publish: ${s.fail_reason ?? "unknown reason"}`, s.fail_reason === "spam_risk_too_many_posts"); stats.failed++;

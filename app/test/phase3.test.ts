@@ -148,6 +148,26 @@ describe("TikTok from the PC", () => {
     expect(await post("t1-tiktok")).toMatchObject({ status: "posted", remote_url: "https://www.tiktok.com/@five.stars6/video/7311" });
   });
 
+  it("an unaudited app on a public account sends the video to the TikTok inbox instead", async () => {
+    const hits: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = String(input);
+      hits.push(url.replace("https://open.tiktokapis.com/v2", ""));
+      if (url.endsWith("/creator_info/query/")) return Response.json({ data: { privacy_level_options: ["PUBLIC_TO_EVERYONE", "SELF_ONLY"] }, error: { code: "ok" } });
+      if (url.endsWith("/post/publish/video/init/")) return Response.json({ error: { code: "unaudited_client_can_only_post_to_private_accounts", message: "Please review our integration guidelines" } }, { status: 403 });
+      if (url.endsWith("/inbox/video/init/")) return Response.json({ data: { publish_id: "inb1", upload_url: "https://upload.tiktok/inbox" }, error: { code: "ok" } });
+      return new Response("{}", { status: 404 });
+    });
+    await connect("tiktok");
+    await duePc("t4", "tiktok");
+    const r = await call("/api/worker/posts/t4-tiktok/start", { method: "POST", headers: WORKER, body: JSON.stringify({ file_size: 5000 }) });
+    expect(await r.json()).toMatchObject({ kind: "tiktok", upload_url: "https://upload.tiktok/inbox", privacy: "INBOX" });
+    expect(hits).toContain("/post/publish/inbox/video/init/");
+    expect(await post("t4-tiktok")).toMatchObject({ status: "posting", remote_id: "inb1" });
+    const detail = await call("/api/clips/t4");
+    expect(((await detail.json()) as { tiktok_caption: string }).tiktok_caption).toContain("#fyp");
+  });
+
   it("a TikTok failure is reported with its reason", async () => {
     await connect("tiktok");
     await duePc("t2", "tiktok");
