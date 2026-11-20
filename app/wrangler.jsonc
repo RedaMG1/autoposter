@@ -4,6 +4,8 @@
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
+  // keep variables added in the Cloudflare dashboard when deploying from here
+  "keep_vars": true,
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
