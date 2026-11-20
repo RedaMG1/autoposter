@@ -115,6 +115,31 @@ describe("approve and schedule", () => {
   });
 });
 
+describe("post now", () => {
+  it("approves and makes every enabled platform due right away", async () => {
+    await call("/api/settings", { method: "PUT", headers: W, body: JSON.stringify({ platforms: ["instagram", "tiktok", "youtube"] }) });
+    await addClip("n1");
+    const r = await (await call("/api/clips/n1/post-now", { method: "POST" })).json<{ platforms: string[] }>();
+    expect(r.platforms).toEqual(["instagram", "tiktok", "youtube"]);
+    const clip = await (await call("/api/clips/n1")).json<{ status: string; posts: { scheduled_at: string; status: string }[] }>();
+    expect(clip.status).toBe("approved");
+    expect(clip.posts).toHaveLength(3);
+    for (const p of clip.posts) expect(Date.now() - Date.parse(p.scheduled_at)).toBeLessThan(10_000);
+  });
+
+  it("moves an already scheduled clip to now and leaves posted platforms alone", async () => {
+    await call("/api/settings", { method: "PUT", headers: W, body: JSON.stringify({ platforms: ["instagram", "tiktok"] }) });
+    await addClip("n2");
+    await call("/api/clips/n2/approve", { method: "POST" });
+    await env.DB.prepare("UPDATE posts SET status = 'posted' WHERE clip_id = 'n2' AND platform = 'instagram'").run();
+    const r = await (await call("/api/clips/n2/post-now", { method: "POST" })).json<{ platforms: string[] }>();
+    expect(r.platforms).toEqual(["tiktok"]);
+    const posts = (await env.DB.prepare("SELECT platform, status, scheduled_at FROM posts WHERE clip_id = 'n2' ORDER BY platform").all<{ platform: string; status: string; scheduled_at: string }>()).results;
+    expect(posts.find((p) => p.platform === "instagram")?.status).toBe("posted");
+    expect(Date.now() - Date.parse(posts.find((p) => p.platform === "tiktok")!.scheduled_at)).toBeLessThan(10_000);
+  });
+});
+
 describe("editing", () => {
   it("updates captions and ignores unknown fields", async () => {
     await addClip("e1");

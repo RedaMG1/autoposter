@@ -66,6 +66,7 @@ export const api = {
     req(`/api/clips/${id}`, { method: "PATCH", body: JSON.stringify(fields) }),
   approve: (id: string) => req<{ scheduled_at: string | null }>(`/api/clips/${id}/approve`, { method: "POST" }),
   skip: (id: string) => req(`/api/clips/${id}/skip`, { method: "POST" }),
+  postNow: (id: string) => req<{ platforms: Platform[] }>(`/api/clips/${id}/post-now`, { method: "POST" }),
   move: (id: string, scheduled_at: string) =>
     req(`/api/clips/${id}/schedule`, { method: "PATCH", body: JSON.stringify({ scheduled_at }) }),
   unschedule: (postId: string) => req(`/api/posts/${postId}`, { method: "DELETE" }),

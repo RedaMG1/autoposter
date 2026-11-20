@@ -3,7 +3,10 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { encryptJson, safeEqual, sign, verify } from "./crypto";
 import type { Env } from "./env";
 import * as ig from "./instagram";
-import { loadTokens, refreshTokens, retryOrFail, runDue, type PostRow } from "./publisher";
+import * as tt from "./tiktok";
+import * as yt from "./youtube";
+import { finalCaption, youtubeText } from "./captions";
+import { loadTokens, PLATFORM_NAME, POST_ROW_SQL, refreshTokens, retryOrFail, runDue, ttTokens, ytTokens, type PostRow } from "./publisher";
 import { pickSlot, type Taken } from "./slots";
 
 export type { Env } from "./env";
@@ -115,6 +118,35 @@ app.post("/api/clips/:id/approve", async (c) => {
   return c.json({ ok: true, scheduled_at: at });
 });
 
+/**
+ * Post right away instead of waiting for a slot: approves the clip and makes every enabled
+ * platform due now. Already-posted platforms are left alone. The PC poster picks it up within a minute.
+ */
+app.post("/api/clips/:id/post-now", async (c) => {
+  const db = c.env.DB;
+  const id = c.req.param("id");
+  const clip = await db.prepare("SELECT id FROM clips WHERE id = ?").bind(id).first();
+  if (!clip) return c.json({ error: "not found" }, 404);
+  const now = new Date().toISOString();
+  const platforms = await getSetting<string[]>(db, "platforms", [...PLATFORMS]);
+  const existing = (await db.prepare("SELECT platform, status FROM posts WHERE clip_id = ?").bind(id)
+    .all<{ platform: string; status: string }>()).results;
+  const has = new Map(existing.map((p) => [p.platform, p.status]));
+  const stmts = [db.prepare("UPDATE clips SET status = 'approved' WHERE id = ?").bind(id)];
+  for (const p of platforms) {
+    const st = has.get(p);
+    if (st === undefined) {
+      stmts.push(db.prepare("INSERT INTO posts (id, clip_id, platform, scheduled_at) VALUES (?, ?, ?, ?)").bind(newId(), id, p, now));
+    } else if (st === "scheduled" || st === "failed") {
+      stmts.push(db.prepare("UPDATE posts SET scheduled_at = ?, status = 'scheduled', attempts = 0, error = NULL, remote_id = NULL WHERE clip_id = ? AND platform = ?")
+        .bind(now, id, p));
+    }
+  }
+  await db.batch(stmts);
+  const queued = platforms.filter((p) => has.get(p) === undefined || has.get(p) === "scheduled" || has.get(p) === "failed");
+  return c.json({ ok: true, platforms: queued });
+});
+
 app.post("/api/clips/:id/skip", async (c) => {
   const id = c.req.param("id");
   const r = await c.env.DB.prepare("UPDATE clips SET status = 'skipped' WHERE id = ?").bind(id).run();
@@ -178,7 +210,7 @@ app.get("/api/accounts", async (c) => {
   const by = Object.fromEntries(rows.map((r) => [r.platform, r]));
   return c.json(PLATFORMS.map((p) => ({
     platform: p,
-    available: p === "instagram" && Boolean(c.env.IG_APP_ID && c.env.IG_CONFIG_ID && c.env.IG_APP_SECRET),
+    available: platformReady(c.env, p),
     connected: Boolean(by[p]),
     display_name: by[p]?.display_name ?? null,
     expires_at: by[p]?.expires_at ?? null,
@@ -192,30 +224,67 @@ app.delete("/api/accounts/:platform", async (c) => {
 
 const redirectUri = (env: Env, platform: string) => `${env.PUBLIC_URL.replace(/\/$/, "")}/api/oauth/${platform}/callback`;
 
-app.get("/api/oauth/instagram/start", async (c) => {
-  if (!c.env.IG_APP_ID || !c.env.IG_CONFIG_ID || !c.env.IG_APP_SECRET) return c.text("Instagram app keys are not set on the server yet.", 400);
+/** Are the developer-app keys for this platform set on the server? */
+function platformReady(env: Env, p: string): boolean {
+  if (p === "instagram") return Boolean(env.IG_APP_ID && env.IG_CONFIG_ID && env.IG_APP_SECRET);
+  if (p === "youtube") return Boolean(env.YT_CLIENT_ID && env.YT_CLIENT_SECRET);
+  if (p === "tiktok") return Boolean(env.TT_CLIENT_KEY && env.TT_CLIENT_SECRET);
+  return false;
+}
+
+app.get("/api/oauth/:platform/start", async (c) => {
+  const p = c.req.param("platform");
+  if (!(PLATFORMS as readonly string[]).includes(p)) return c.text("unknown platform", 404);
+  if (!platformReady(c.env, p)) return c.text(`${PLATFORM_NAME[p as keyof typeof PLATFORM_NAME]} app keys are not set on the server yet.`, 400);
   const nonce = crypto.randomUUID();
-  const state = `${nonce}.${await sign(c.env.SESSION_KEY, `oauth:instagram:${nonce}`)}`;
-  return c.redirect(ig.authorizeUrl(c.env.IG_APP_ID, c.env.IG_CONFIG_ID, redirectUri(c.env, "instagram"), state));
+  const state = `${nonce}.${await sign(c.env.SESSION_KEY, `oauth:${p}:${nonce}`)}`;
+  const uri = redirectUri(c.env, p);
+  const url = p === "instagram" ? ig.authorizeUrl(c.env.IG_APP_ID!, c.env.IG_CONFIG_ID!, uri, state)
+    : p === "youtube" ? yt.authorizeUrl(c.env.YT_CLIENT_ID!, uri, state)
+    : tt.authorizeUrl(c.env.TT_CLIENT_KEY!, uri, state);
+  return c.redirect(url);
 });
 
-app.get("/api/oauth/instagram/callback", async (c) => {
+app.get("/api/oauth/:platform/callback", async (c) => {
+  const p = c.req.param("platform") as keyof typeof PLATFORM_NAME;
+  const name = PLATFORM_NAME[p];
+  if (!name || !platformReady(c.env, p)) return c.text("unknown platform", 404);
   const back = (msg: string) => c.redirect(`/#settings?msg=${encodeURIComponent(msg)}`);
   const [nonce, sig] = (c.req.query("state") ?? "").split(".");
-  if (!nonce || !(await verify(c.env.SESSION_KEY, `oauth:instagram:${nonce}`, sig ?? ""))) { console.error("instagram callback: invalid state"); return back("Instagram: invalid state, try again"); }
+  if (!nonce || !(await verify(c.env.SESSION_KEY, `oauth:${p}:${nonce}`, sig ?? ""))) {
+    console.error(`${p} callback: invalid state`);
+    return back(`${name}: invalid state, try again`);
+  }
   const code = c.req.query("code");
-  if (!code) { console.error(`instagram callback without code: ${c.req.query("error_description") ?? c.req.query("error") ?? "cancelled"}`); return back(`Instagram: ${c.req.query("error_description") ?? "connection cancelled"}`); }
+  if (!code) {
+    const why = c.req.query("error_description") ?? c.req.query("error") ?? "connection cancelled";
+    console.error(`${p} callback without code: ${why}`);
+    return back(`${name}: ${why}`);
+  }
   try {
-    const r = await ig.connect(fetch, c.env.IG_APP_ID!, c.env.IG_APP_SECRET!, redirectUri(c.env, "instagram"), code.replace(/#_$/, ""), c.env.IG_USER_ID);
+    const uri = redirectUri(c.env, p);
+    let display: string;
+    let tokens: unknown;
+    let expires: string | null = null;
+    if (p === "instagram") {
+      const r = await ig.connect(fetch, c.env.IG_APP_ID!, c.env.IG_APP_SECRET!, uri, code.replace(/#_$/, ""), c.env.IG_USER_ID);
+      display = `@${r.username}`; tokens = r.tokens; expires = r.expires_at;
+    } else if (p === "youtube") {
+      const r = await yt.connect(fetch, c.env.YT_CLIENT_ID!, c.env.YT_CLIENT_SECRET!, uri, code);
+      display = r.name; tokens = r.tokens;
+    } else {
+      const r = await tt.connect(fetch, c.env.TT_CLIENT_KEY!, c.env.TT_CLIENT_SECRET!, uri, code);
+      display = r.name; tokens = r.tokens;
+    }
     await c.env.DB.prepare(
-      `INSERT INTO accounts (platform, display_name, tokens, expires_at) VALUES ('instagram', ?, ?, ?)
+      `INSERT INTO accounts (platform, display_name, tokens, expires_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(platform) DO UPDATE SET display_name = excluded.display_name, tokens = excluded.tokens, expires_at = excluded.expires_at`)
-      .bind(`@${r.username}`, await encryptJson(c.env.TOKEN_KEY, r.tokens), r.expires_at).run();
-    console.log(`instagram connected as @${r.username}`);
-    return back(`Instagram connected as @${r.username}`);
+      .bind(p, display, await encryptJson(c.env.TOKEN_KEY, tokens), expires).run();
+    console.log(`${p} connected as ${display}`);
+    return back(`${name} connected as ${display}`);
   } catch (e) {
-    console.error(`instagram connect failed: ${(e as Error).message}`);
-    return back(`Instagram: ${(e as Error).message}`);
+    console.error(`${p} connect failed: ${(e as Error).message}`);
+    return back(`${name}: ${(e as Error).message}`);
   }
 });
 
@@ -387,27 +456,69 @@ app.get("/api/worker/due", async (c) => {
   return c.json(rows.results);
 });
 
-/** PC poster: get an Instagram upload address for a due post. Instagram then processes it and the cron publishes. */
-app.post("/api/worker/posts/:id/instagram/start", async (c) => {
-  const p = await c.env.DB.prepare(
-    `SELECT p.*, c.caption_instagram, c.video_key, c.local_path, NULL AS posting_started_at FROM posts p JOIN clips c ON c.id = p.clip_id
-     WHERE p.id = ? AND p.platform = 'instagram'`).bind(c.req.param("id")).first<PostRow>();
-  if (!p) return c.json({ error: "not found" }, 404);
+/**
+ * PC poster: start the upload of a due post. Returns where and how to send the file:
+ *  instagram -> { kind, upload_uri, access_token }  (one POST of the whole file, then the cron publishes)
+ *  youtube   -> { kind, upload_uri, access_token }  (one PUT of the whole file, then report /uploaded)
+ *  tiktok    -> { kind, upload_url, chunk_size, total_chunk_count } (PUT chunks, then the cron checks status)
+ * Body: { file_size } (bytes of the file the PC will send).
+ */
+async function startUpload(c: Context<App>, platformFilter?: string) {
+  const { file_size } = await c.req.json<{ file_size?: number }>().catch(() => ({ file_size: undefined }));
+  const p = await c.env.DB.prepare(`${POST_ROW_SQL} WHERE p.id = ?`).bind(c.req.param("id")).first<PostRow>();
+  if (!p || (platformFilter && p.platform !== platformFilter)) return c.json({ error: "not found" }, 404);
   if (p.status !== "scheduled") return c.json({ error: `post is ${p.status}` }, 409);
-  const tokens = await loadTokens<ig.IgTokens>(c.env, "instagram");
-  if (!tokens) return c.json({ error: "Instagram is not connected" }, 409);
+  if (p.platform !== "instagram" && !(Number.isInteger(file_size) && file_size! > 0)) return c.json({ error: "file_size required" }, 400);
+  // claim the post so a second run cannot start it twice
+  const claim = await c.env.DB.prepare("UPDATE posts SET status = 'posting', posting_started_at = ?, error = NULL WHERE id = ? AND status = 'scheduled'")
+    .bind(new Date().toISOString(), p.id).run();
+  if (!claim.meta.changes) return c.json({ error: "already started" }, 409);
+  const setRemote = (id: string) => c.env.DB.prepare("UPDATE posts SET remote_id = ? WHERE id = ?").bind(id, p.id).run();
   try {
-    const { id, uri } = await ig.createReelResumable(fetch, tokens, p.caption_instagram);
-    // claim the post so a second PC poster run cannot start it twice
-    const r = await c.env.DB.prepare("UPDATE posts SET status = 'posting', remote_id = ?, posting_started_at = ?, error = NULL WHERE id = ? AND status = 'scheduled'")
-      .bind(id, new Date().toISOString(), p.id).run();
-    if (!r.meta.changes) return c.json({ error: "already started" }, 409);
-    return c.json({ upload_uri: uri, access_token: tokens.access_token });
+    if (p.platform === "instagram") {
+      const tokens = await loadTokens<ig.IgTokens>(c.env, "instagram");
+      if (!tokens) throw new ig.IgError("Instagram is not connected", 400);
+      const { id, uri } = await ig.createReelResumable(fetch, tokens, finalCaption("instagram", p));
+      await setRemote(id);
+      return c.json({ kind: "instagram", upload_uri: uri, access_token: tokens.access_token });
+    }
+    if (p.platform === "youtube") {
+      const tokens = await ytTokens(c.env);
+      if (!tokens) throw new yt.YtError("YouTube is not connected", 400);
+      const { title, description } = youtubeText(p);
+      const uri = await yt.startUpload(fetch, tokens.access_token, file_size!, title, description, c.env.YT_PRIVACY || "public");
+      return c.json({ kind: "youtube", upload_uri: uri, access_token: tokens.access_token });
+    }
+    const tokens = await ttTokens(c.env);
+    if (!tokens) throw new tt.TtError("TikTok is not connected", 400);
+    const privacy = await tt.privacyFor(fetch, tokens.access_token, c.env.TT_PRIVACY || "PUBLIC_TO_EVERYONE");
+    const r = await tt.initUpload(fetch, tokens.access_token, file_size!, finalCaption("tiktok", p), privacy);
+    await setRemote(r.publish_id);
+    return c.json({ kind: "tiktok", upload_url: r.upload_url, chunk_size: r.chunk_size, total_chunk_count: r.total_chunk_count, privacy });
   } catch (e) {
-    const err = e as ig.IgError;
-    await retryOrFail(c.env, p, err.message ?? String(e), err instanceof ig.IgError && err.permanent);
+    const err = e as Error & { permanent?: boolean };
+    await retryOrFail(c.env, p, err.message ?? String(e), Boolean(err.permanent));
     return c.json({ error: err.message }, 502);
   }
+}
+
+app.post("/api/worker/posts/:id/start", (c) => startUpload(c));
+// older PC posters call this one
+app.post("/api/worker/posts/:id/instagram/start", (c) => startUpload(c, "instagram"));
+
+/** PC poster: the file was sent. YouTube is posted at this point; Instagram/TikTok finish in the cron. */
+app.post("/api/worker/posts/:id/uploaded", async (c) => {
+  const b = await c.req.json<{ remote_id?: string }>().catch(() => ({} as { remote_id?: string }));
+  const p = await c.env.DB.prepare("SELECT id, platform, status FROM posts WHERE id = ?").bind(c.req.param("id"))
+    .first<{ id: string; platform: string; status: string }>();
+  if (!p) return c.json({ error: "not found" }, 404);
+  if (p.status !== "posting") return c.json({ error: `post is ${p.status}` }, 409);
+  if (p.platform === "youtube") {
+    if (!b.remote_id || !/^[\w-]{6,20}$/.test(b.remote_id)) return c.json({ error: "remote_id (video id) required" }, 400);
+    await c.env.DB.prepare("UPDATE posts SET status = 'posted', remote_id = ?, remote_url = ?, error = NULL WHERE id = ?")
+      .bind(b.remote_id, `https://youtube.com/shorts/${b.remote_id}`, p.id).run();
+  }
+  return c.json({ ok: true });
 });
 
 /** PC poster: the upload itself failed (file missing, network...). */

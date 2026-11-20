@@ -1,8 +1,7 @@
 """PC poster: uploads clips that are due, straight from this PC, at full quality.
 
-Runs in the background. Every minute it asks the online app what is due, uploads those
-videos to Instagram from their file on this PC, and the app then publishes them and marks
-them posted. If the PC was off at a posting time, the post goes out when it is back on.
+Runs in the background. Every minute it asks the online app what is due and uploads those
+videos from their file on this PC to Instagram, TikTok and YouTube; the app then marks them posted. If the PC was off at a posting time, the post goes out when it is back on.
 
 Usage:  python poster.py          (keeps running)
         python poster.py --once   (one check, then exit)
@@ -91,38 +90,95 @@ def instagram_ready(file: Path, tmp_dir: Path) -> Path:
     return out
 
 
-def handle(api: Api, post: dict, uploader=upload_to_instagram, prepare=instagram_ready) -> str:
+def upload_to_youtube(upload_uri: str, access_token: str, file: Path, timeout: int = 1800) -> str:
+    """PUT the whole file to the resumable session. Returns the YouTube video id."""
+    size = file.stat().st_size
+    with open(file, "rb") as fh:
+        req = urllib.request.Request(upload_uri, data=fh, method="PUT", headers={
+            "Authorization": f"Bearer {access_token}", "content-type": "video/mp4",
+            "content-length": str(size), "user-agent": "autoposter-pc/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            raise UploadError(f"YouTube upload refused ({e.code}): {e.read()[:300].decode(errors='replace')}") from None
+    if not body.get("id"):
+        raise UploadError(f"YouTube upload did not return a video id: {json.dumps(body)[:300]}")
+    return body["id"]
+
+
+def tiktok_chunks(size: int, chunk_size: int, count: int) -> list[tuple[int, int]]:
+    """(first byte, last byte) of each chunk; the last chunk takes the remainder."""
+    out = []
+    for i in range(count):
+        start = i * chunk_size
+        end = size - 1 if i == count - 1 else start + chunk_size - 1
+        out.append((start, end))
+    return out
+
+
+def upload_to_tiktok(upload_url: str, chunk_size: int, count: int, file: Path, timeout: int = 900) -> None:
+    size = file.stat().st_size
+    with open(file, "rb") as fh:
+        for start, end in tiktok_chunks(size, chunk_size, count):
+            fh.seek(start)
+            data = fh.read(end - start + 1)
+            req = urllib.request.Request(upload_url, data=data, method="PUT", headers={
+                "content-type": "video/mp4", "content-length": str(len(data)),
+                "content-range": f"bytes {start}-{end}/{size}", "user-agent": "autoposter-pc/1.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    r.read()
+            except urllib.error.HTTPError as e:
+                raise UploadError(f"TikTok upload refused ({e.code}): {e.read()[:300].decode(errors='replace')}") from None
+
+
+def handle(api: Api, post: dict, uploader=upload_to_instagram, prepare=instagram_ready,
+           yt_uploader=upload_to_youtube, tt_uploader=upload_to_tiktok) -> str:
     """Process one due post. Returns what happened, for the log."""
-    if post["platform"] != "instagram":
-        return "skipped (only Instagram uploads from the PC for now)"
+    import subprocess
+    import tempfile
+    platform = post["platform"]
     path = Path(post["local_path"])
     if not path.is_file():
         api.fail(post["id"], f"file not found: {path}", permanent=True)
         return f"file missing: {path}"
     try:
-        start = api.start_instagram(post["id"])
-    except RuntimeError as e:
-        # 409 = already started or not connected: nothing to upload now
-        return f"not started: {e}"
-    import subprocess
-    import tempfile
-    try:
         with tempfile.TemporaryDirectory() as tmp:
-            ready = prepare(path, Path(tmp)) if prepare else path
-            uploader(start["upload_uri"], start["access_token"], ready)
-            note = " (re-encoded to 15 Mbps for Instagram)" if ready != path else ""
+            # Instagram has a bitrate limit; TikTok and YouTube take the original file
+            ready = prepare(path, Path(tmp)) if (prepare and platform == "instagram") else path
+            try:
+                start = api.start(post["id"], ready.stat().st_size)
+            except RuntimeError as e:
+                # 409 = already started, 502 = the platform refused (already reported by the app)
+                return f"not started: {e}"
+            if start["kind"] == "instagram":
+                uploader(start["upload_uri"], start["access_token"], ready)
+                note = " (re-encoded to 15 Mbps)" if ready != path else ""
+                return f"uploaded{note}, Instagram is processing it"
+            if start["kind"] == "youtube":
+                video_id = yt_uploader(start["upload_uri"], start["access_token"], ready)
+                api.uploaded(post["id"], video_id)
+                return f"posted on YouTube: https://youtube.com/shorts/{video_id}"
+            tt_uploader(start["upload_url"], start["chunk_size"], start["total_chunk_count"], ready)
+            private = " as private (TikTok app not audited yet)" if start.get("privacy") == "SELF_ONLY" else ""
+            return f"uploaded{private}, TikTok is processing it"
     except (UploadError, urllib.error.URLError, TimeoutError, ConnectionError, OSError, subprocess.CalledProcessError) as e:
         api.fail(post["id"], str(e)[:400])
         return f"upload failed: {e}"
-    return f"uploaded{note}, Instagram is processing it"
 
 
 class PosterApi(Api):
     def due(self) -> list[dict]:
         return self._send("GET", "/api/worker/due")  # type: ignore[return-value]
 
-    def start_instagram(self, post_id: str) -> dict:
-        return self._send("POST", f"/api/worker/posts/{post_id}/instagram/start")
+    def start(self, post_id: str, file_size: int) -> dict:
+        return self._send("POST", f"/api/worker/posts/{post_id}/start",
+                          data=json.dumps({"file_size": file_size}).encode(), headers={"content-type": "application/json"})
+
+    def uploaded(self, post_id: str, remote_id: str) -> None:
+        self._send("POST", f"/api/worker/posts/{post_id}/uploaded",
+                   data=json.dumps({"remote_id": remote_id}).encode(), headers={"content-type": "application/json"})
 
     def fail(self, post_id: str, error: str, permanent: bool = False) -> None:
         self._send("POST", f"/api/worker/posts/{post_id}/fail",

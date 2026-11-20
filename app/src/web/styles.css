@@ -43,7 +43,7 @@ nav, .filters { display: flex; gap: 6px; flex-wrap: wrap; }
 .card .title { margin: 4px 10px 10px; font-size: 14px; flex: 1; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .card .actions { padding: 0 10px 10px; }
-.card .actions button { flex: 1; }
+.card .actions button { flex: 1 1 30%; padding: 8px 6px; font-size: 13px; }
 
 .overlay { position: fixed; inset: 0; background: #000b; display: grid; place-items: center; padding: 16px; z-index: 20; }
 .sheet { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: min(960px, 100%); max-height: calc(100dvh - 32px); overflow: auto; }

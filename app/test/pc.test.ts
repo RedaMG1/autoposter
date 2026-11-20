@@ -68,7 +68,7 @@ describe("PC poster flow", () => {
     });
     const r = await call("/api/worker/posts/d4-ig/instagram/start", { method: "POST", headers: WORKER });
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ upload_uri: "https://rupload.facebook.com/ig-api-upload/v25.0/cont1", access_token: "tok" });
+    expect(await r.json()).toEqual({ kind: "instagram", upload_uri: "https://rupload.facebook.com/ig-api-upload/v25.0/cont1", access_token: "tok" });
     expect(seen).toEqual(["/v25.0/42/media resumable"]);
     expect(await post("d4-ig")).toMatchObject({ status: "posting", remote_id: "cont1" });
     const again = await call("/api/worker/posts/d4-ig/instagram/start", { method: "POST", headers: WORKER });

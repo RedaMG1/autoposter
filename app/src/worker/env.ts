@@ -17,4 +17,14 @@ export interface Env {
   /** Instagram professional account id (Business Suite > Instagram accounts), used if the token does not list it */
   IG_USER_ID?: string;
   IG_APP_SECRET?: string; // secret
+  /** Google OAuth client for YouTube (the secret is a Cloudflare secret) */
+  YT_CLIENT_ID?: string;
+  YT_CLIENT_SECRET?: string;
+  /** public | unlisted | private (Google locks API uploads to private until the app is verified) */
+  YT_PRIVACY?: string;
+  /** TikTok developer app (the secret is a Cloudflare secret) */
+  TT_CLIENT_KEY?: string;
+  TT_CLIENT_SECRET?: string;
+  /** wanted TikTok privacy; falls back to what TikTok allows (SELF_ONLY until the app is audited) */
+  TT_PRIVACY?: string;
 }

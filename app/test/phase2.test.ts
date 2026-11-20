@@ -181,10 +181,10 @@ describe("Instagram publishing", () => {
     expect(await post("ig4-instagram")).toMatchObject({ status: "failed" });
   });
 
-  it("marks TikTok and YouTube as not set up yet", async () => {
+  it("fails TikTok and YouTube posts with a clear message when not connected", async () => {
     await duePost("tt1", "tiktok");
     await runDue(E, fakeFetch({}).f);
-    expect((await post("tt1-tiktok"))?.error).toContain("not set up yet");
+    expect((await post("tt1-tiktok"))?.error).toContain("TikTok is not connected");
   });
 
   it("does not touch posts that are not due", async () => {

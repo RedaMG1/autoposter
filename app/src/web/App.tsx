@@ -97,9 +97,14 @@ function Library({ notify }: { notify: (m: string) => void }) {
   }, [filter]);
   useEffect(() => { setClips(null); load(); }, [load]);
 
-  const act = async (id: string, what: "approve" | "skip") => {
+  const act = async (id: string, what: "approve" | "skip" | "now") => {
     try {
-      if (what === "approve") {
+      if (what === "now") {
+        const c = clips?.find((x) => x.id === id);
+        const msg = c && (await confirmPostNow(c));
+        if (!msg) return;
+        notify(msg);
+      } else if (what === "approve") {
         const r = await api.approve(id);
         notify(r.scheduled_at ? `Scheduled for ${fmtWhen(r.scheduled_at)}` : "Approved");
       } else {
@@ -139,6 +144,7 @@ function Library({ notify }: { notify: (m: string) => void }) {
             {c.status === "waiting" && (
               <div class="actions">
                 <button class="primary" onClick={() => act(c.id, "approve")}>Approve</button>
+                <button onClick={() => act(c.id, "now")} title="Post right away instead of waiting for a slot">Post now</button>
                 <button onClick={() => act(c.id, "skip")}>Skip</button>
               </div>
             )}
@@ -203,6 +209,7 @@ function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; n
               <label>TikTok caption
                 <textarea rows={3} value={draft.caption_tiktok} onInput={(e) => setDraft({ ...draft, caption_tiktok: e.currentTarget.value })} />
               </label>
+              <p class="hint">Hashtags (#GTA6, the streamer, #fyp / #Shorts…) and a credit line are added automatically when posting, so just write the hook here.</p>
               <label>Instagram caption
                 <textarea rows={4} value={draft.caption_instagram} onInput={(e) => setDraft({ ...draft, caption_instagram: e.currentTarget.value })} />
               </label>
@@ -214,6 +221,13 @@ function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; n
                     await api.approve(clip.id);
                   }, "Approved and scheduled")}>Approve</button>
                 )}
+                {clip.posts.some((p) => p.status !== "posted") || clip.posts.length === 0 ? (
+                  <button disabled={busy} title="Post right away instead of waiting for a slot" onClick={async () => {
+                    if (dirty) await api.save(clip.id, draft);
+                    const msg = await confirmPostNow(clip);
+                    if (msg) { notify(msg); await load(); }
+                  }}>Post now</button>
+                ) : null}
                 {clip.status !== "skipped" && (
                   <button disabled={busy} onClick={() => run(() => api.skip(clip.id), "Skipped")}>Skip</button>
                 )}
@@ -308,6 +322,15 @@ function Calendar({ notify }: { notify: (m: string) => void }) {
 
 // ---------------- Settings ----------------
 
+/** Ask, then post now. Returns a message for the toast. */
+async function confirmPostNow(clip: Pick<Clip, "id" | "title">): Promise<string | null> {
+  if (!confirm(`Post "${clip.title}" now?
+
+It goes out within about a minute (your PC must be on).`)) return null;
+  const r = await api.postNow(clip.id);
+  return r.platforms.length ? `Posting now to ${r.platforms.map((p) => PLATFORM_LABEL[p]).join(", ")}` : "Already posted everywhere";
+}
+
 function pcStatus(seen?: string | null): string {
   if (!seen) return "The PC poster has not connected yet. Start it on your PC (pc-worker/poster.py) so due clips get uploaded.";
   const mins = Math.round((Date.now() - Date.parse(seen)) / 60_000);
@@ -336,7 +359,7 @@ function Accounts({ notify }: { notify: (m: string) => void }) {
           ) : a.available ? (
             <a class="button primary" href={`/api/oauth/${a.platform}/start`}>Connect</a>
           ) : (
-            <span class="hint">{a.platform === "instagram" ? "Waiting for the Instagram app keys on the server." : "Coming in the next phase."}</span>
+            <span class="hint">Waiting for the {PLATFORM_LABEL[a.platform]} app keys on the server.</span>
           )}
         </div>
       ))}
@@ -387,7 +410,7 @@ function SettingsPage({ notify }: { notify: (m: string) => void }) {
           {PLATFORM_LABEL[p]}
         </label>
       ))}
-      <p class="hint">A platform that is ticked but not connected shows the post as failed at its time, with the reason.</p>
+      <p class="hint">A platform that is ticked but not connected shows the post as failed at its time, with the reason. TikTok and YouTube post as private until each platform approves the app.</p>
 
       <h2>Scheduling</h2>
       <label class="check">
