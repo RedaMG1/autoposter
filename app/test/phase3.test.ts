@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanCaption, finalCaption, hashtags, youtubeText } from "../src/worker/captions";
+import { cleanCaption, finalCaption, hashtags, viralTitle, youtubeText } from "../src/worker/captions";
 import { encryptJson } from "../src/worker/crypto";
 import type { Env } from "../src/worker/env";
 import { runDue } from "../src/worker/publisher";
@@ -22,32 +22,38 @@ describe("captions and hashtags", () => {
   it("strips old hashtags and credit lines", () => {
     expect(cleanCaption("Nice one 💀 Stream: Jynxzi #GTA6 #Jynxzi #gaming")).toBe("Nice one 💀");
   });
-  it("Instagram gets 6-9 focused tags, no duplicates, plus a credit line", () => {
+  it("titles look like the top Shorts: Title Case, '!', emoji, names and GTA 6 kept as written", () => {
+    expect(viralTitle(clip)).toBe("Jynxzi Tries to Land a Plane in the Water in GTA 6! 😭");
+    expect(viralTitle({ ...clip, title: "xQc finds a hidden easter egg in GTA 6" , streamer: "xQc" })).toBe("xQc Finds a Hidden Easter Egg in GTA 6! 👀");
+    expect(viralTitle({ ...clip, title: "penguinz0 dies in GTA 6", streamer: "penguinz0" })).toBe("penguinz0 Dies in GTA 6! 💀😭");
+    expect(viralTitle({ ...clip, title: "Already has one 🔥" })).toBe("Already has one 🔥");
+    expect(viralTitle({ ...clip, title: "x".repeat(120) }).length).toBeLessThanOrEqual(100);
+  });
+  it("Instagram: story line, hook, credit, then 2-6 tags", () => {
     const tags = hashtags("instagram", clip);
-    expect(tags.length).toBeGreaterThanOrEqual(6);
-    expect(tags.length).toBeLessThanOrEqual(9);
-    expect(new Set(tags.map((t) => t.toLowerCase())).size).toBe(tags.length);
+    expect(tags.length).toBeGreaterThanOrEqual(2);
+    expect(tags.length).toBeLessThanOrEqual(6);
     expect(tags).toContain("#GTA6");
     expect(tags).toContain("#Jynxzi");
     const text = finalCaption("instagram", clip);
-    expect(text.startsWith("Smooth landing? 💀")).toBe(true);
-    expect(text).toContain("🎥 Jynxzi on Twitch");
-    expect(text.match(/#GTA6\b/g)).toHaveLength(1);
+    expect(text.startsWith("Jynxzi Tries to Land a Plane")).toBe(true);
+    expect(text).toContain("\n\nSmooth landing? 💀\n\n🎥 Jynxzi on Twitch\n\n#GTA6");
+    expect(text.match(/#GTA6(?![\w])/g)).toHaveLength(1);
   });
-  it("TikTok gets 3-5 tags including #fyp", () => {
+  it("TikTok gets the story, the hook and 3-5 tags", () => {
     const tags = hashtags("tiktok", clip);
     expect(tags.length).toBeGreaterThanOrEqual(3);
     expect(tags.length).toBeLessThanOrEqual(5);
-    expect(tags).toContain("#fyp");
-    expect(finalCaption("tiktok", clip)).toContain("Landing went great");
+    expect(tags).toEqual(expect.arrayContaining(["#GTA6", "#Jynxzi", "#fyp"]));
+    const text = finalCaption("tiktok", clip);
+    expect(text).toContain("Jynxzi Tries to Land a Plane in the Water in GTA 6! 😭 Landing went great");
   });
-  it("YouTube title gets #Shorts and stays under 100 characters", () => {
+  it("YouTube: viral title, short description with stream link and tags, search keywords", () => {
     const y = youtubeText(clip);
-    expect(y.title).toBe("Jynxzi tries to land a plane in the water in GTA 6 #Shorts");
+    expect(y.title).toBe("Jynxzi Tries to Land a Plane in the Water in GTA 6! 😭");
     expect(y.description).toContain("Full stream: https://www.twitch.tv/videos/1");
-    expect(y.description).toContain("#Shorts");
-    const long = youtubeText({ ...clip, title: "x".repeat(99) });
-    expect(long.title.length).toBeLessThanOrEqual(100);
+    expect(y.description).toContain("#Jynxzi #JynxziFunnyMoments #GTA6 #Shorts");
+    expect(y.tags).toEqual(expect.arrayContaining(["Jynxzi", "Jynxzi gta 6", "gta 6 funny moments"]));
   });
   it("streamer names with symbols make valid tags", () => {
     expect(hashtags("tiktok", { ...clip, streamer: "penguinz0 (Charlie)" })).toContain("#penguinz0Charlie");
@@ -83,7 +89,8 @@ describe("YouTube from the PC", () => {
       const url = String(input);
       if (url.startsWith("https://www.googleapis.com/upload/youtube/v3/videos")) {
         const meta = JSON.parse(String(init?.body));
-        expect(meta.snippet.title).toContain("#Shorts");
+        expect(meta.snippet.title).toBe("Jynxzi Lands in GTA 6! 😭");
+        expect(meta.snippet.tags).toContain("Jynxzi gta 6");
         expect(meta.status.privacyStatus).toBe("public");
         expect(new Headers(init?.headers).get("x-upload-content-length")).toBe("1234");
         return new Response("", { status: 200, headers: { location: "https://upload.example/session1" } });

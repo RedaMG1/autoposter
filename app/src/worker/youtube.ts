@@ -60,7 +60,15 @@ export async function fresh(f: Fetch, clientId: string, clientSecret: string, t:
 }
 
 /** Start a resumable upload; the PC then PUTs the file to the returned address. */
-export async function startUpload(f: Fetch, accessToken: string, size: number, title: string, description: string, privacy: string) {
+/** YouTube allows about 500 characters of tags in total. */
+export function fitTags(tags: string[]) {
+  const out: string[] = [];
+  let len = 0;
+  for (const t of tags) { const n = t.length + (t.includes(" ") ? 2 : 0) + 1; if (len + n > 480) break; out.push(t); len += n; }
+  return out;
+}
+
+export async function startUpload(f: Fetch, accessToken: string, size: number, title: string, description: string, privacy: string, tags: string[] = []) {
   const res = await f("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status", {
     method: "POST",
     headers: {
@@ -70,7 +78,7 @@ export async function startUpload(f: Fetch, accessToken: string, size: number, t
       "x-upload-content-type": "video/mp4",
     },
     body: JSON.stringify({
-      snippet: { title: title.slice(0, 100), description: description.slice(0, 4900), categoryId: "20" /* Gaming */ },
+      snippet: { title: title.slice(0, 100), description: description.slice(0, 4900), tags: fitTags(tags), categoryId: "20" /* Gaming */ },
       status: { privacyStatus: privacy, selfDeclaredMadeForKids: false },
     }),
   });

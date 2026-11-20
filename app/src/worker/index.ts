@@ -508,8 +508,8 @@ async function startUpload(c: Context<App>, platformFilter?: string) {
     if (p.platform === "youtube") {
       const tokens = await ytTokens(c.env);
       if (!tokens) throw new yt.YtError("YouTube is not connected", 400);
-      const { title, description } = youtubeText(p);
-      const uri = await yt.startUpload(fetch, tokens.access_token, file_size!, title, description, c.env.YT_PRIVACY || "public");
+      const { title, description, tags } = youtubeText(p);
+      const uri = await yt.startUpload(fetch, tokens.access_token, file_size!, title, description, c.env.YT_PRIVACY || "public", tags);
       return c.json({ kind: "youtube", upload_uri: uri, access_token: tokens.access_token });
     }
     const tokens = await ttTokens(c.env);
