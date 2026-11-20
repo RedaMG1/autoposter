@@ -13,7 +13,7 @@ npm run dev          # builds the app and serves it on port 8787
 ```
 
 - PC: http://localhost:8787
-- Phone (same network): http://192.168.1.132:8787 (your PC's address; allow Node through the Windows firewall if asked)
+- Phone (same network): http://<your PC's local IP>:8787 (`ipconfig` shows it; allow Node through the Windows firewall if asked)
 
 Local data (database + videos) lives in `app/.wrangler/state` and is not committed.
 
