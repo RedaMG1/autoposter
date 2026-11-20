@@ -2,8 +2,9 @@
 
 Usage:  python import_existing.py [--clips DIR] [--api URL] [--only NAME_PART]
 
-Reads each "<Streamer> - <moment> (GTA 6).mp4" and its "- post.md", makes a thumbnail,
-uploads the full-quality mp4 + thumbnail, and creates the clip as "to review".
+Reads each "<Streamer> - <moment> (GTA 6).mp4" and its "- post.md", makes a small preview,
+and creates the clip as "to review". The video itself stays on this PC (poster.py uploads it
+at posting time); --upload-videos stores it online instead (needs R2).
 Safe to run again: clips are keyed by a stable id, so re-running updates them.
 """
 from __future__ import annotations
@@ -141,6 +142,10 @@ class Api:
                 pass
             raise
 
+    def put_thumb(self, clip_id: str, file: Path) -> dict:
+        return self._send("PUT", f"/api/worker/thumb/{clip_id}", data=file.read_bytes(),
+                          headers={"content-type": "image/jpeg"})
+
     def create_clip(self, clip: dict) -> dict:
         return self._send("POST", "/api/worker/clips", data=json.dumps(clip).encode(),
                           headers={"content-type": "application/json"})
@@ -165,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--clips", type=Path, default=DEFAULT_CLIPS)
     ap.add_argument("--api", default=env.get("AUTOPOSTER_API", "http://127.0.0.1:8787"))
     ap.add_argument("--only", default="", help="import only files whose name contains this text")
+    ap.add_argument("--upload-videos", action="store_true",
+                    help="also upload the videos to R2 (only if the app has R2 storage; default keeps them on this PC)")
     a = ap.parse_args(argv)
     token = env.get("AUTOPOSTER_WORKER_TOKEN", "")
     if not token:
@@ -179,15 +186,18 @@ def main(argv: list[str] | None = None) -> int:
             cid = clip_id(mp4)
             try:
                 meta = parse_post(md.read_text(encoding="utf-8"))
-                video_key = f"clips/{cid}/video.mp4"
-                api.upload(video_key, mp4)
                 thumb = Path(tmp) / f"{cid}.jpg"
-                thumb_key = f"clips/{cid}/thumb.jpg" if thumbnail(mp4, thumb) else ""
-                if thumb_key:
-                    api.upload(thumb_key, thumb)
-                api.create_clip({"id": cid, "streamer": streamer, **meta, "video_key": video_key,
-                                 "thumb_key": thumb_key, "duration": duration(mp4)})
-                print(f"  [{i}/{len(clips)}] {mp4.stem}  ({mp4.stat().st_size / 1e6:.0f} MB)")
+                has_thumb = thumbnail(mp4, thumb)
+                record = {"id": cid, "streamer": streamer, **meta, "duration": duration(mp4),
+                          "local_path": str(mp4.resolve())}
+                if a.upload_videos:  # optional R2 mode
+                    record["video_key"] = f"clips/{cid}/video.mp4"
+                    api.upload(record["video_key"], mp4)
+                api.create_clip(record)
+                if has_thumb:
+                    api.put_thumb(cid, thumb)
+                where = "uploaded" if a.upload_videos else "video stays on this PC"
+                print(f"  [{i}/{len(clips)}] {mp4.stem}  ({mp4.stat().st_size / 1e6:.0f} MB, {where})")
             except Exception as e:  # keep going, report at the end
                 failed += 1
                 print(f"  [{i}/{len(clips)}] FAILED {mp4.stem}: {e}")

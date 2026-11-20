@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
-import { api, fmtWhen, LOGGED_OUT, media, toLocalInput, type Account, type CalendarRow, type Clip, type Platform, type Post, type Settings, type Status } from "./api";
+import { api, fmtWhen, LOGGED_OUT, media, thumbUrl, toLocalInput, type Account, type CalendarRow, type Clip, type Platform, type Post, type Settings, type Status } from "./api";
 
 type Tab = "library" | "calendar" | "settings";
+
+/** "scheduled" past its time means the PC has not picked it up yet */
+const statusLabel = (p: Pick<Post, "status" | "scheduled_at">) =>
+  p.status === "scheduled" && Date.parse(p.scheduled_at) < Date.now() ? "waiting for PC" : p.status === "posting" ? "uploading / processing" : p.status;
 const PLATFORM_LABEL: Record<Platform, string> = { instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube" };
 
 export function App() {
@@ -124,7 +128,7 @@ function Library({ notify }: { notify: (m: string) => void }) {
         {clips?.map((c) => (
           <article class="card" key={c.id}>
             <button class="thumb" onClick={() => setOpen(c.id)} aria-label={`Open ${c.title}`}>
-              {c.thumb_key ? <img src={media(c.thumb_key)} alt="" loading="lazy" /> : <div class="noimg">No preview</div>}
+              {c.thumb_key ? <img src={thumbUrl(c.id, c.thumb_key)} alt="" loading="lazy" /> : <div class="noimg">No preview</div>}
               {c.duration && <span class="dur">{Math.round(c.duration)}s</span>}
             </button>
             <div class="meta">
@@ -183,8 +187,13 @@ function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; n
           <div class="sheet-body">
             <div class="player">
               {clip.video_key
-                ? <video src={media(clip.video_key)} poster={media(clip.thumb_key)} controls playsInline preload="metadata" />
-                : <div class="noimg">Video not uploaded yet</div>}
+                ? <video src={media(clip.video_key)} poster={thumbUrl(clip.id, clip.thumb_key)} controls playsInline preload="metadata" />
+                : (
+                  <div class="pcvideo">
+                    {clip.thumb_key ? <img src={thumbUrl(clip.id, clip.thumb_key)} alt="" /> : <div class="noimg">No preview</div>}
+                    <p class="hint">The video stays on your PC{clip.local_path ? `: ${clip.local_path}` : ""}</p>
+                  </div>
+                )}
             </div>
             <div class="form">
               <p class="streamer">{clip.streamer} · <span class={`badge ${clip.status}`}>{clip.status === "waiting" ? "to review" : clip.status}</span></p>
@@ -223,7 +232,7 @@ function ClipSheet({ id, onClose, notify }: { id: string; onClose: () => void; n
                     {clip.posts.map((p) => (
                       <li key={p.id}>
                         <span class={`chip ${p.platform}`}>{PLATFORM_LABEL[p.platform]}</span>
-                        <span class={`badge ${p.status}`}>{p.status}</span>
+                        <span class={`badge ${p.status}`}>{statusLabel(p)}</span>
                         <span class="when">{fmtWhen(p.scheduled_at)}</span>
                         {p.remote_url && <a href={p.remote_url} target="_blank" rel="noreferrer">open</a>}
                         {p.error && <span class="err" title={p.error}>{p.error}</span>}
@@ -281,11 +290,11 @@ function Calendar({ notify }: { notify: (m: string) => void }) {
           {items.map((g) => (
             <button class="slot" onClick={() => setOpen(g.clip.clip_id)} key={g.clip.clip_id + g.time}>
               <span class="time">{g.time}</span>
-              {g.clip.thumb_key ? <img src={media(g.clip.thumb_key)} alt="" loading="lazy" /> : <span class="noimg small" />}
+              {g.clip.thumb_key ? <img src={thumbUrl(g.clip.clip_id, g.clip.thumb_key)} alt="" loading="lazy" /> : <span class="noimg small" />}
               <span class="info">
                 <span class="title">{g.clip.title}</span>
                 <span class="chips">
-                  {g.posts.map((p) => <span class={`chip ${p.platform} ${p.status}`} title={p.error ?? p.status}>{PLATFORM_LABEL[p.platform]}{p.status !== "scheduled" ? ` · ${p.status}` : ""}</span>)}
+                  {g.posts.map((p) => <span class={`chip ${p.platform} ${p.status}`} title={p.error ?? statusLabel(p)}>{PLATFORM_LABEL[p.platform]}{p.status !== "scheduled" || Date.parse(p.scheduled_at) < Date.now() ? ` · ${statusLabel(p)}` : ""}</span>)}
                 </span>
               </span>
             </button>
@@ -298,6 +307,12 @@ function Calendar({ notify }: { notify: (m: string) => void }) {
 }
 
 // ---------------- Settings ----------------
+
+function pcStatus(seen?: string | null): string {
+  if (!seen) return "The PC poster has not connected yet. Start it on your PC (pc-worker/poster.py) so due clips get uploaded.";
+  const mins = Math.round((Date.now() - Date.parse(seen)) / 60_000);
+  return mins <= 3 ? "PC poster is running: due clips upload within a minute." : `PC poster last checked in ${mins < 120 ? `${mins} minutes` : `${Math.round(mins / 60)} hours`} ago. Clips due while the PC is off go out when it is back on.`;
+}
 
 function Accounts({ notify }: { notify: (m: string) => void }) {
   const [list, setList] = useState<Account[] | null>(null);
@@ -344,6 +359,9 @@ function SettingsPage({ notify }: { notify: (m: string) => void }) {
     <section class="settings">
       <h2>Accounts</h2>
       <Accounts notify={notify} />
+
+      <h2>Your PC</h2>
+      <p class="hint">{pcStatus(s.pc_last_seen)}</p>
 
       <h2>Posting times</h2>
       <p class="hint">Each approved clip takes the next free time. Times are in your time zone (Paris).</p>

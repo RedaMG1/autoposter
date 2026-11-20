@@ -3,7 +3,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { encryptJson, safeEqual, sign, verify } from "./crypto";
 import type { Env } from "./env";
 import * as ig from "./instagram";
-import { refreshTokens, runDue } from "./publisher";
+import { loadTokens, refreshTokens, retryOrFail, runDue, type PostRow } from "./publisher";
 import { pickSlot, type Taken } from "./slots";
 
 export type { Env } from "./env";
@@ -239,6 +239,14 @@ app.get("/api/public/media/*", async (c) => {
   return serveMedia(c, key);
 });
 
+app.get("/api/thumb/:id", async (c) => {
+  const row = await c.env.DB.prepare("SELECT data, content_type FROM thumbs WHERE clip_id = ?").bind(c.req.param("id"))
+    .first<{ data: ArrayBuffer | number[]; content_type: string }>();
+  if (!row) return c.json({ error: "no thumbnail" }, 404);
+  const bytes = row.data instanceof ArrayBuffer ? new Uint8Array(row.data) : Uint8Array.from(row.data);
+  return new Response(bytes, { headers: { "content-type": row.content_type, "cache-control": "private, max-age=86400" } });
+});
+
 /** Stream a video or thumbnail from R2, with Range support so the <video> player can seek. */
 app.get("/api/media/*", async (c) => {
   const key = c.req.path.slice("/api/media/".length);
@@ -248,6 +256,7 @@ app.get("/api/media/*", async (c) => {
 
 async function serveMedia(c: Context<App>, key: string) {
   const range = parseRange(c.req.header("range"));
+  if (!c.env.MEDIA) return c.json({ error: "videos are kept on the PC" }, 404);
   const obj = await c.env.MEDIA.get(key, range ? { range } : undefined);
   if (!obj) return c.json({ error: "not found" }, 404);
   const headers = new Headers();
@@ -280,6 +289,9 @@ app.use("/api/worker/*", async (c, next) => {
   await next();
 });
 
+app.use("/api/worker/upload/*", async (c, next) => (c.env.MEDIA ? next() : c.json({ error: "no R2 storage: videos are kept on the PC" }, 501)));
+app.use("/api/worker/multipart/*", async (c, next) => (c.env.MEDIA ? next() : c.json({ error: "no R2 storage: videos are kept on the PC" }, 501)));
+
 const contentType = (key: string) => (key.endsWith(".mp4") ? "video/mp4" : "image/jpeg");
 
 /** Upload a small file (under 90 MB) straight into R2. */
@@ -287,7 +299,7 @@ app.put("/api/worker/upload/*", async (c) => {
   const key = c.req.path.slice("/api/worker/upload/".length);
   if (!KEY_RE.test(key)) return c.json({ error: "bad key" }, 400);
   if (!c.req.raw.body) return c.json({ error: "empty body" }, 400);
-  const obj = await c.env.MEDIA.put(key, c.req.raw.body, { httpMetadata: { contentType: contentType(key) } });
+  const obj = await c.env.MEDIA!.put(key, c.req.raw.body, { httpMetadata: { contentType: contentType(key) } });
   return c.json({ ok: true, key, size: obj?.size ?? 0 });
 });
 
@@ -299,12 +311,12 @@ app.post("/api/worker/multipart/*", async (c) => {
   if (!KEY_RE.test(key)) return c.json({ error: "bad key" }, 400);
   const action = c.req.query("action");
   if (action === "create") {
-    const mpu = await c.env.MEDIA.createMultipartUpload(key, { httpMetadata: { contentType: contentType(key) } });
+    const mpu = await c.env.MEDIA!.createMultipartUpload(key, { httpMetadata: { contentType: contentType(key) } });
     return c.json({ uploadId: mpu.uploadId });
   }
   const uploadId = c.req.query("uploadId");
   if (!uploadId) return c.json({ error: "uploadId required" }, 400);
-  const mpu = c.env.MEDIA.resumeMultipartUpload(key, uploadId);
+  const mpu = c.env.MEDIA!.resumeMultipartUpload(key, uploadId);
   if (action === "complete") {
     const { parts } = await c.req.json<{ parts: R2UploadedPart[] }>();
     const obj = await mpu.complete(parts);
@@ -320,7 +332,7 @@ app.put("/api/worker/multipart/*", async (c) => {
   const part = Number(c.req.query("part"));
   if (!KEY_RE.test(key) || !uploadId || !Number.isInteger(part) || part < 1 || part > 10_000) return c.json({ error: "bad request" }, 400);
   if (!c.req.raw.body) return c.json({ error: "empty body" }, 400);
-  const uploaded = await c.env.MEDIA.resumeMultipartUpload(key, uploadId).uploadPart(part, c.req.raw.body);
+  const uploaded = await c.env.MEDIA!.resumeMultipartUpload(key, uploadId).uploadPart(part, c.req.raw.body);
   return c.json(uploaded);
 });
 
@@ -330,19 +342,79 @@ app.post("/api/worker/clips", async (c) => {
   const str = (k: string) => (typeof b[k] === "string" ? (b[k] as string) : "");
   if (!str("streamer") || !str("title") || !str("id")) return c.json({ error: "id, streamer and title are required" }, 400);
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(str("id"))) return c.json({ error: "bad id" }, 400);
+  if (!str("video_key") && !str("local_path")) return c.json({ error: "video_key or local_path is required" }, 400);
+  // re-imports refresh the files and texts, but never undo your edits to title/captions or your approve/skip
   await c.env.DB.prepare(
-    `INSERT INTO clips (id, streamer, title, caption_tiktok, caption_instagram, hook, video_key, thumb_key, duration, score, source_vod)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET streamer = excluded.streamer, title = excluded.title,
-       caption_tiktok = excluded.caption_tiktok, caption_instagram = excluded.caption_instagram, hook = excluded.hook,
+    `INSERT INTO clips (id, streamer, title, caption_tiktok, caption_instagram, hook, video_key, thumb_key, duration, score, source_vod, local_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET streamer = excluded.streamer,
        video_key = excluded.video_key, thumb_key = excluded.thumb_key, duration = excluded.duration,
-       score = excluded.score, source_vod = excluded.source_vod`)
+       score = excluded.score, source_vod = excluded.source_vod, local_path = excluded.local_path, hook = excluded.hook`)
     .bind(str("id"), str("streamer"), str("title"), str("caption_tiktok"), str("caption_instagram"), str("hook"),
       str("video_key") || null, str("thumb_key") || null,
       typeof b.duration === "number" ? b.duration : null, typeof b.score === "number" ? b.score : null,
-      str("source_vod") || null)
+      str("source_vod") || null, str("local_path") || null)
     .run();
   return c.json({ ok: true, id: str("id") });
+});
+
+/** Small preview image, stored in the database (no R2 needed). */
+app.put("/api/worker/thumb/:id", async (c) => {
+  const id = c.req.param("id");
+  const data = await c.req.arrayBuffer();
+  if (!data.byteLength || data.byteLength > 512 * 1024) return c.json({ error: "thumbnail must be 1 byte to 512 KB" }, 400);
+  const clip = await c.env.DB.prepare("SELECT id FROM clips WHERE id = ?").bind(id).first();
+  if (!clip) return c.json({ error: "create the clip first" }, 404);
+  await c.env.DB.batch([
+    c.env.DB.prepare("INSERT INTO thumbs (clip_id, data) VALUES (?, ?) ON CONFLICT(clip_id) DO UPDATE SET data = excluded.data").bind(id, data),
+    c.env.DB.prepare("UPDATE clips SET thumb_key = 'db' WHERE id = ?").bind(id),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** Posts whose time has come and whose video is on the PC. The PC poster calls this every minute. */
+app.get("/api/worker/due", async (c) => {
+  const now = new Date().toISOString();
+  await c.env.DB.prepare("INSERT INTO settings (key, value) VALUES ('pc_last_seen', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(JSON.stringify(now)).run();
+  const rows = await c.env.DB.prepare(
+    `SELECT p.id, p.platform, p.scheduled_at, c.id AS clip_id, c.title, c.local_path, c.caption_instagram, c.caption_tiktok
+     FROM posts p JOIN clips c ON c.id = p.clip_id
+     WHERE p.status = 'scheduled' AND p.scheduled_at <= ? AND c.local_path IS NOT NULL AND c.video_key IS NULL
+     ORDER BY p.scheduled_at LIMIT 5`).bind(now).all();
+  return c.json(rows.results);
+});
+
+/** PC poster: get an Instagram upload address for a due post. Instagram then processes it and the cron publishes. */
+app.post("/api/worker/posts/:id/instagram/start", async (c) => {
+  const p = await c.env.DB.prepare(
+    `SELECT p.*, c.caption_instagram, c.video_key, c.local_path, NULL AS posting_started_at FROM posts p JOIN clips c ON c.id = p.clip_id
+     WHERE p.id = ? AND p.platform = 'instagram'`).bind(c.req.param("id")).first<PostRow>();
+  if (!p) return c.json({ error: "not found" }, 404);
+  if (p.status !== "scheduled") return c.json({ error: `post is ${p.status}` }, 409);
+  const tokens = await loadTokens<ig.IgTokens>(c.env, "instagram");
+  if (!tokens) return c.json({ error: "Instagram is not connected" }, 409);
+  try {
+    const { id, uri } = await ig.createReelResumable(fetch, tokens, p.caption_instagram);
+    // claim the post so a second PC poster run cannot start it twice
+    const r = await c.env.DB.prepare("UPDATE posts SET status = 'posting', remote_id = ?, posting_started_at = ?, error = NULL WHERE id = ? AND status = 'scheduled'")
+      .bind(id, new Date().toISOString(), p.id).run();
+    if (!r.meta.changes) return c.json({ error: "already started" }, 409);
+    return c.json({ upload_uri: uri, access_token: tokens.access_token });
+  } catch (e) {
+    const err = e as ig.IgError;
+    await retryOrFail(c.env, p, err.message ?? String(e), err instanceof ig.IgError && err.permanent);
+    return c.json({ error: err.message }, 502);
+  }
+});
+
+/** PC poster: the upload itself failed (file missing, network...). */
+app.post("/api/worker/posts/:id/fail", async (c) => {
+  const { error, permanent } = await c.req.json<{ error?: string; permanent?: boolean }>().catch(() => ({ error: "", permanent: false }));
+  const p = await c.env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(c.req.param("id")).first<PostRow>();
+  if (!p) return c.json({ error: "not found" }, 404);
+  await retryOrFail(c.env, p, `PC upload: ${error || "unknown error"}`, Boolean(permanent));
+  return c.json({ ok: true });
 });
 
 app.all("/api/*", (c) => c.json({ error: "not found" }, 404));

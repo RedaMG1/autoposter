@@ -9,6 +9,7 @@ export interface Clip {
   caption_instagram: string;
   hook: string;
   video_key: string | null;
+  local_path: string | null;
   thumb_key: string | null;
   duration: number | null;
   score: number | null;
@@ -27,7 +28,7 @@ export interface Post {
 }
 
 export interface CalendarRow extends Post { title: string; streamer: string; thumb_key: string | null }
-export interface Settings { slots: string[]; platforms: Platform[]; auto_schedule: boolean }
+export interface Settings { slots: string[]; platforms: Platform[]; auto_schedule: boolean; pc_last_seen?: string | null }
 
 export interface Account {
   platform: Platform;
@@ -74,6 +75,10 @@ export const api = {
 };
 
 export const media = (key: string | null) => (key ? `/api/media/${key}` : undefined);
+
+/** preview image: stored in the database ("db") or, in R2 mode, in storage */
+export const thumbUrl = (clipId: string, thumbKey: string | null) =>
+  thumbKey === "db" ? `/api/thumb/${clipId}` : media(thumbKey);
 
 export const fmtWhen = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });

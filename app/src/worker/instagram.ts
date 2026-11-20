@@ -73,6 +73,21 @@ export async function createReel(f: Fetch, t: IgTokens, videoUrl: string, captio
   return r.id;
 }
 
+/**
+ * Step 1 (video on the PC): create a Reels container for a resumable upload.
+ * The PC then sends the file to `uri` with headers `Authorization: OAuth <token>`,
+ * `offset: 0` and `file_size: <bytes>`.
+ */
+export async function createReelResumable(f: Fetch, t: IgTokens, caption: string): Promise<{ id: string; uri: string }> {
+  return igJson<{ id: string; uri: string }>(await f(`${IG_GRAPH}/${t.user_id}/media`, {
+    method: "POST",
+    body: new URLSearchParams({
+      media_type: "REELS", upload_type: "resumable", caption: caption.slice(0, 2200), share_to_feed: "true",
+      access_token: t.access_token,
+    }),
+  }), "create reel");
+}
+
 export type ContainerState = "IN_PROGRESS" | "FINISHED" | "ERROR" | "EXPIRED" | "PUBLISHED";
 
 /** Step 2: wait until Instagram has processed the video. */

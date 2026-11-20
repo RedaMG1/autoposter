@@ -8,6 +8,7 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
+          r2Buckets: ["MEDIA"], // tests also cover the optional R2 mode
           bindings: {
             TEST_MIGRATIONS: migrations,
             WORKER_TOKEN: "test-token",

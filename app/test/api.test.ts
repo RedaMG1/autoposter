@@ -5,7 +5,7 @@ import { call, WORKER as W } from "./helpers";
 const json = (body: unknown) => ({ method: "POST", headers: W, body: JSON.stringify(body) });
 
 async function addClip(id: string, streamer = "Jynxzi", extra: Record<string, unknown> = {}) {
-  const r = await call("/api/worker/clips", json({ id, streamer, title: `${streamer} clip ${id}`, score: 8, ...extra }));
+  const r = await call("/api/worker/clips", json({ id, streamer, title: `${streamer} clip ${id}`, score: 8, local_path: `C:/clips/${id}.mp4`, ...extra }));
   expect(r.status).toBe(200);
 }
 
@@ -41,12 +41,19 @@ describe("worker API", () => {
     expect([...new Uint8Array(await part.arrayBuffer())]).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
   });
 
-  it("creates clips and updates them on re-import", async () => {
+  it("re-importing updates files but keeps your edits and decisions", async () => {
     await addClip("c1");
-    await addClip("c1", "Jynxzi", { title: "new title" });
-    const clips = await (await call("/api/clips")).json<{ id: string; title: string; status: string }[]>();
+    await call("/api/clips/c1", { method: "PATCH", headers: W, body: JSON.stringify({ title: "my edited title" }) });
+    await call("/api/clips/c1/skip", { method: "POST" });
+    await addClip("c1", "Jynxzi", { title: "importer title", local_path: "D:/moved/c1.mp4", score: 9 });
+    const clips = await (await call("/api/clips")).json<{ id: string; title: string; status: string; local_path: string; score: number }[]>();
     expect(clips).toHaveLength(1);
-    expect(clips[0]).toMatchObject({ id: "c1", title: "new title", status: "waiting" });
+    expect(clips[0]).toMatchObject({ id: "c1", title: "my edited title", status: "skipped", local_path: "D:/moved/c1.mp4", score: 9 });
+  });
+
+  it("needs a video location", async () => {
+    const r = await call("/api/worker/clips", json({ id: "nov", streamer: "S", title: "T" }));
+    expect(r.status).toBe(400);
   });
 });
 

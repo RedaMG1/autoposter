@@ -7,10 +7,10 @@ type Fetch = typeof fetch;
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 60 * 60_000;
 
-interface PostRow {
+export interface PostRow {
   id: string; clip_id: string; platform: "instagram" | "tiktok" | "youtube"; scheduled_at: string;
   status: string; remote_id: string | null; attempts: number;
-  caption_instagram: string; video_key: string | null; posting_started_at: string | null;
+  caption_instagram: string; video_key: string | null; local_path: string | null; posting_started_at: string | null;
 }
 
 /** Signed, time-limited public link so a platform can download a video. */
@@ -20,7 +20,7 @@ export async function publicMediaUrl(env: Env, key: string, ttlMs = 2 * 3600_000
   return `${env.PUBLIC_URL.replace(/\/$/, "")}/api/public/media/${key}?exp=${exp}&sig=${sig}`;
 }
 
-async function loadTokens<T>(env: Env, platform: string): Promise<T | null> {
+export async function loadTokens<T>(env: Env, platform: string): Promise<T | null> {
   const row = await env.DB.prepare("SELECT tokens FROM accounts WHERE platform = ?").bind(platform).first<{ tokens: string | null }>();
   return row?.tokens ? decryptJson<T>(env.TOKEN_KEY, row.tokens) : null;
 }
@@ -29,7 +29,7 @@ async function fail(env: Env, id: string, error: string) {
   await env.DB.prepare("UPDATE posts SET status = 'failed', error = ? WHERE id = ?").bind(error.slice(0, 500), id).run();
 }
 
-async function retryOrFail(env: Env, p: PostRow, error: string, permanent: boolean) {
+export async function retryOrFail(env: Env, p: PostRow, error: string, permanent: boolean) {
   const attempts = p.attempts + 1;
   if (permanent || attempts >= MAX_ATTEMPTS) return fail(env, p.id, error);
   // back to scheduled, tried again on a later run
@@ -40,7 +40,7 @@ async function retryOrFail(env: Env, p: PostRow, error: string, permanent: boole
 export async function runDue(env: Env, f: Fetch = fetch, now = Date.now()): Promise<{ started: number; finished: number; failed: number }> {
   const stats = { started: 0, finished: 0, failed: 0 };
   const rows = (await env.DB.prepare(
-    `SELECT p.*, c.caption_instagram, c.video_key FROM posts p JOIN clips c ON c.id = p.clip_id
+    `SELECT p.*, c.caption_instagram, c.video_key, c.local_path FROM posts p JOIN clips c ON c.id = p.clip_id
      WHERE (p.status = 'scheduled' AND p.scheduled_at <= ?) OR p.status = 'posting'
      ORDER BY p.scheduled_at LIMIT 10`).bind(new Date(now).toISOString()).all<PostRow>()).results;
 
@@ -53,11 +53,15 @@ export async function runDue(env: Env, f: Fetch = fetch, now = Date.now()): Prom
     }
     const tokens = await loadTokens<ig.IgTokens>(env, "instagram");
     if (!tokens) { await fail(env, p.id, "Instagram is not connected (Settings > Accounts)."); stats.failed++; continue; }
-    if (!p.video_key) { await fail(env, p.id, "This clip has no video uploaded."); stats.failed++; continue; }
+    if (!p.video_key) {
+      // the video is on the PC: the PC poster starts the upload (see /api/worker/due)
+      if (p.local_path && p.status === "scheduled") continue;
+      if (!p.local_path) { await fail(env, p.id, "This clip has no video file."); stats.failed++; continue; }
+    }
 
     try {
       if (p.status === "scheduled") {
-        const url = await publicMediaUrl(env, p.video_key, 2 * 3600_000, now);
+        const url = await publicMediaUrl(env, p.video_key!, 2 * 3600_000, now);
         const container = await ig.createReel(f, tokens, url, p.caption_instagram);
         await env.DB.prepare("UPDATE posts SET status = 'posting', remote_id = ?, posting_started_at = ?, error = NULL WHERE id = ?")
           .bind(container, new Date(now).toISOString(), p.id).run();

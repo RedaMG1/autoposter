@@ -14,12 +14,11 @@
     {
       "binding": "DB",
       "database_name": "autoposter",
-      // replaced with the real id at deploy time (phase 2)
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "de304c9e-62ce-427b-bec7-f4f742da8dde",
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "autoposter-media" }],
+  // no R2: videos stay on the PC (pc-worker/poster.py uploads them at posting time)
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": { "TIMEZONE": "Europe/Paris" }
 }

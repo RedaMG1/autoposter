@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
-  MEDIA: R2Bucket;
+  /** optional: only when videos are stored in R2 instead of on the PC */
+  MEDIA?: R2Bucket;
   ASSETS: Fetcher;
   TIMEZONE: string;
   /** https://... address of the deployed app (used for OAuth redirects and video links) */
